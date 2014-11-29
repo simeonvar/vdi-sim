@@ -7,17 +7,16 @@ import math
 SETTING = "./setting.conf"
 
 # VM states
-ORIGINAL = 1
-MIGRATING = 2
-MIGRATED = 3
-RESUMING = 4
-configs = {}
+ORIGINAL = "original"
+MIGRATING = "migrating"
+MIGRATED = "migrated"
+RESUMING = "resuming"
 
 # VDI state
-FULL = 5
-MIGRATING = 6
-S3 = 7
-REINTEGRATING = 8
+FULL = 4
+MIGRATING = 2
+S3 = 1
+REINTEGRATING = 3
 
 # global variables used in decide_to_migrate
 migration_interval = 0
@@ -27,17 +26,22 @@ cumulative_interval = 0
 vm_states_before_migration = []
 resume_interval = 0
 
-def read_config():
-    Config = ConfigParser.ConfigParser()
-    Config.read(SETTING)
-    dict1={}
-    for section in Config.sections():
-        dict1 = dict(dict1.items() + Config.items(section))
-    return dict1
+configs = {}
+parser = ConfigParser.ConfigParser()
+parser.optionxform=str
+parser.read(SETTING)
 
-configs = read_config()
+for section in parser.sections():
+    for option in parser.options(section):
+        try:
+            value=parser.getint(section,option)
+        except ValueError:
+            value=parser.get(section,option)
+        configs[option] = value
+        print "Parser >>> ... ", option,value,type(value)
 
 def run():
+    global configs
     inf = open(configs['input'], 'r')
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
@@ -54,9 +58,14 @@ def run():
     cur_vdi_states =[]
     # vdi states, a list of list, e.g.,  [[FULL, MIGRATING, FULL], [FULL, MIGRATING, FULL], ...]
     vdi_states = []
+    total_vdi_activeness_arr = []
+
     for line in inf:
         line = line.rstrip()
         activities = line.split(",")
+        vdi_activeness = []
+        for i in range(0, nVDIs):
+            vdi_activeness.append(0.0)
         
         if cur_sec == 0:
             for i in range(0,nVDIs):
@@ -67,6 +76,7 @@ def run():
         for i in range(0, nVMs):
             if activities[i] == '1':
                 vm_states[i] = 1
+                vdi_activeness[i/vms_per_vdi] += (1.0/float(vms_per_vdi))
         if sec_past >= interval:
             # Reaching the end of the interval, time to make decision
             next_vdi_states = make_decision(vm_states, vdi_states, cur_sec)
@@ -77,10 +87,35 @@ def run():
             sec_past += 1            
             vdi_states.append(cur_vdi_states)
         cur_sec += 1
+        total_vdi_activeness_arr.append(vdi_activeness)
 
     inf.close()
 
-def get_migration_interval(nActive, nIdles, configs):
+    o = ''
+    o += "Time,"
+    for v in range(0, nVDIs):
+        o+="VDI%d-state,VDI%d-activeness"%(v,v)
+        if v != nVDIs-1:
+            o+=","
+    o+= "\n"
+    print o
+    i = 0
+    for s,a in zip(vdi_states, total_vdi_activeness_arr):
+        h = i / 3600
+        m = i / 60 % 60
+        sec = i % 60
+        o = ""
+        o += "%d:%d:%d, "%(h,m,sec)
+        for v in range(0, nVDIs):
+            o += "%d,%f"%(s[v],a[v])
+            if v != nVDIs-1:
+                o+=","
+        print o+"\n"
+        i += 1
+    print "total state num: %d" % len(vdi_states)
+
+def get_migration_interval(nActive, nIdles):
+    global configs
     method = configs['method']
     interval = int(configs['interval'])
     full_migrate = float(configs['full_migrate'])
@@ -88,22 +123,24 @@ def get_migration_interval(nActive, nIdles, configs):
     assert full_migrate > 0
     assert partial_migrate > 0 
 
-    if method == 'partial':
+    #print "method is %s" % method
+    if method == "partial":
         return math.ceil( ((nActive + nIdles) * partial_migrate) / interval)
     elif method == "partial + full":
         ret = math.ceil( (nActive * full_migrate + nIdles * partial_migrate) / interval)
         return ret
     else:
-        raise Exception("Unknown migration method: %" % method)
+        raise Exception("Unknown migration method: %s" % method)
 
 
 # query the traces data and return the minimun number idle VMs that decide whether the vdi is migratable
 def get_idle_threshold(cur_sec):
+    global configs
     # FIXME: Only one stategy is implemented here: if the idle ratio is >70%
     ratio = 0.7
     
     nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDUs'])
+    nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
     
     threshold = int( vms_per_vdi * ratio )
@@ -112,10 +149,10 @@ def get_idle_threshold(cur_sec):
 
 # assume that migratable_servers is sorted in descending order of idleness
 def decide_migrate_plan(migratable_servers):
-
-    nVDIs = int(configs['nVDUs'])
+    global configs
+    nVDIs = int(configs['nVDIs'])
     
-    slack = int(config['slack'])
+    slack = int(configs['slack'])
     
     # FIXME: assume all VDI servers all have 100% capacity
     # FIXME: the detailed plan as for which 
@@ -134,9 +171,9 @@ def decide_migrate_plan(migratable_servers):
     return to_migrate
 
 def decide_to_migrate(vm_states,vdi_states, cur_sec):
-
+    global configs
     nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDUs'])
+    nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
 
     # get idleness
@@ -165,7 +202,7 @@ def decide_to_migrate(vm_states,vdi_states, cur_sec):
         next_states = []
         c = 0
         for s in vdi_states[-1]:
-            next_states[c] = s
+            next_states.append(s)
             c += 1
         # update the new stats
         for i in to_migrate:
@@ -198,17 +235,20 @@ def update_states(vdi_states, prevs, nexts):
     return next_states
 
 def record_vm_states(vm_states):
-    c = 0
+    global vm_states_before_migration
     if len(vm_states_before_migration) == 0:
         # init it first
         for i in vm_states:
             vm_states_before_migration.append(i)
+    c = 0
     for i in vm_states:
         vm_states_before_migration[c] = i
         c += 1
 
 def resume_policy(vms_awake):
-    nVDIs = int(configs['nVDUs'])
+    global configs
+    nVDIs = int(configs['nVDIs'])
+    nVMs = int(configs['nVMs'])
     vms_per_vdi = nVMs / nVDIs 
     # FIXME: only implement a policy here: any vm awake  > 5 will lead to the whole cluster to resume
     resume = False
@@ -220,8 +260,9 @@ def resume_policy(vms_awake):
 
 def decide_to_resume(vm_states, vdi_states, cur_sec):
 
+    global configs
     nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDUs'])
+    nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
 
     # how many vms becomes active from idle from 
@@ -242,25 +283,50 @@ def decide_to_resume(vm_states, vdi_states, cur_sec):
     resume = resume_policy(vms_woke_up_per_vdi)
     next_states = []
     if resume:
-        next_states = update_states(vdi_states, MIGRATED, REINTEGRATING)
+        next_states = update_states(vdi_states, S3, REINTEGRATING)
     else:
-        for i in range(0, nVDI):
-            next_states[i] = vdi_states[-1][i]
+        for i in range(0, nVDIs):
+            next_states.append(vdi_states[-1][i])
 
     return next_states
 
-def make_decision(vm_states,vdi_states, cur_sec):
+# return how many idle and active vms will be migrated
+def get_migrating_vdi_stats(next_states, vm_states):
+    global configs
+    nVMs = int(configs['nVMs'])
+    nVDIs = int(configs['nVDIs'])
+    vms_per_vdi = nVMs / nVDIs
+    nActives = 0
+    nIdles = 0
     
+    i = 0
+    j = 0
+    for i in range(0, nVDIs):
+        if next_states[i] == MIGRATING:
+            for j in range(0, vms_per_vdi):
+                if vm_states[i*vms_per_vdi + j] == 0:
+                    nIdles += 1
+                else:
+                    nActives += 1
+
+    return (nActives, nIdles)
+                
+def make_decision(vm_states,vdi_states, cur_sec):
+    global configs    
+    global migration_interval
+    global cumulative_interval
     next_states = []
     overall_state = get_overall_state(vdi_states)
     
     if overall_state == "full":
         # decide whether to migrate
-        (next_states, decision) = decide_to_migrate()
-        # how many intervals it takes to migrate all VMs
-        migration_interval = get_migration_interval(nActives, nIdles, configs)
-        assert migration_interval > 0
+        (next_states, decision) = decide_to_migrate(vm_states,vdi_states, cur_sec)
+
         if decision == True:
+            (nActives, nIdles) = get_migrating_vdi_stats(next_states, vm_states)
+            # how many intervals it takes to migrate all VMs
+            migration_interval = get_migration_interval(nActives, nIdles)
+            assert migration_interval > 0
             cumulative_interval = 0
             record_vm_states(vm_states)
 
@@ -275,9 +341,13 @@ def make_decision(vm_states,vdi_states, cur_sec):
         else:
             cumulative_interval = 0
             # change the state is migrated, put correspoinding vdi server into low power mode
-            next_states = update_states(vdi_states, MIGRATING, MIGRATED)
+            next_states = update_states(vdi_states, MIGRATING, S3)
     if overall_state == "migrated":
         next_states = decide_to_resume(vm_states, vdi_states, cur_sec)
 
     return next_states
 
+
+if __name__ == '__main__':
+
+    run()
