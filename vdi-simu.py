@@ -38,15 +38,16 @@ for section in parser.sections():
         except ValueError:
             value=parser.get(section,option)
         configs[option] = value
-        print "Parser >>> ... ", option,value,type(value)
+        # print "Parser >>> ... ", option,value,type(value)
 
-def run():
+def run(i, outf):
     global configs
-    inf = open(configs['input'], 'r')
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
     interval = int(configs['interval'])
-    
+    vms_per_vdi = nVMs/nVDIs
+    inf = open(i, "r")
+    of  = open(outf,"w+")
     # each line is one second of snapshot of NUM of desktops, 1 is active and 0 is idle
     sec_past = 0
     # current VM states in a time interval
@@ -59,6 +60,8 @@ def run():
     # vdi states, a list of list, e.g.,  [[FULL, MIGRATING, FULL], [FULL, MIGRATING, FULL], ...]
     vdi_states = []
     total_vdi_activeness_arr = []
+
+    active_secs = 0
 
     for line in inf:
         line = line.rstrip()
@@ -74,7 +77,8 @@ def run():
             cur_vdi_states = vdi_states[cur_sec -1]
         # evaluate the current situation
         for i in range(0, nVMs):
-            if activities[i] == '1':
+            if activities[i] == " 1":
+                active_secs += 1
                 vm_states[i] = 1
                 vdi_activeness[i/vms_per_vdi] += (1.0/float(vms_per_vdi))
         if sec_past >= interval:
@@ -97,22 +101,33 @@ def run():
         o+="VDI%d-state,VDI%d-activeness"%(v,v)
         if v != nVDIs-1:
             o+=","
-    o+= "\n"
-    print o
+    o+= ",VDIs in Full Power, TotalVMActiveness\n"
+    of.write(o)
     i = 0
+    # number of seconds where activeness is greater than 0%
     for s,a in zip(vdi_states, total_vdi_activeness_arr):
-        h = i / 3600
+        h = 14 + i / 3600
         m = i / 60 % 60
         sec = i % 60
         o = ""
         o += "%d:%d:%d, "%(h,m,sec)
+        vdis_in_full = 0
+        a1 = sum(a)/nVDIs
         for v in range(0, nVDIs):
             o += "%d,%f"%(s[v],a[v])
+            if s[v] == FULL:
+                vdis_in_full += 1
             if v != nVDIs-1:
                 o+=","
-        print o+"\n"
+        o +=",%d,%f"%(vdis_in_full, a1)
+        of.write(o+"\n")
         i += 1
-    print "total state num: %d" % len(vdi_states)
+    # print "total state num: %d" % len(vdi_states)
+    print "Total active seconds: %d" % active_secs 
+    of.write("Total active seconds: %d" % active_secs + "\n")
+    of.close()
+    print "Done. Result is stored in %s" % outf
+    # print "Total active seconds: %d" % a1
 
 def get_migration_interval(nActive, nIdles):
     global configs
@@ -349,5 +364,10 @@ def make_decision(vm_states,vdi_states, cur_sec):
 
 
 if __name__ == '__main__':
-
-    run()
+    
+    inputs = configs["inputs"]
+    
+    for inf in inputs.rstrip().split(","):
+        if inf != '':
+            outf = inf+".out.csv"
+            run(inf,outf)
