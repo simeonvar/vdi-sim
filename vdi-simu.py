@@ -24,7 +24,8 @@ cumulative_interval = 0
 # record all vm states when decide to migrate to 
 # keep track of who are idles and who are active later
 vm_states_before_migration = []
-resume_interval = 0
+reintegration_interval = 0
+cumulative_interval2 = 0
 
 configs = {}
 parser = ConfigParser.ConfigParser()
@@ -39,6 +40,16 @@ for section in parser.sections():
             value=parser.get(section,option)
         configs[option] = value
         # print "Parser >>> ... ", option,value,type(value)
+
+def state_str(s):
+    if s == FULL:
+        return "Full"
+    elif s == MIGRATING:
+        return "migrating"
+    elif s == S3:
+        return "S3"
+    else:
+        return "reintegrating"
 
 def run(i, outf):
     global configs
@@ -114,8 +125,8 @@ def run(i, outf):
         vdis_in_full = 0
         a1 = sum(a)/nVDIs
         for v in range(0, nVDIs):
-            o += "%d,%f"%(s[v],a[v])
-            if s[v] == FULL:
+            o += "%s,%f"%(state_str(s[v]),a[v])
+            if s[v] != S3 :
                 vdis_in_full += 1
             if v != nVDIs-1:
                 o+=","
@@ -134,16 +145,34 @@ def get_migration_interval(nActive, nIdles):
     method = configs['method']
     interval = int(configs['interval'])
     full_migrate = float(configs['full_migrate'])
-    partial_migrate = float(configs['full_migrate'])
+    partial_migrate = float(configs['partial_migrate'])
+    s3_suspend = float(configs['s3_suspend'])
     assert full_migrate > 0
     assert partial_migrate > 0 
 
     #print "method is %s" % method
     if method == "partial":
-        return math.ceil( ((nActive + nIdles) * partial_migrate) / interval)
+        return math.ceil( ((nActive + nIdles) * partial_migrate + s3_suspend) / interval)
     elif method == "partial + full":
-        ret = math.ceil( (nActive * full_migrate + nIdles * partial_migrate) / interval)
+        ret = math.ceil( (nActive * full_migrate + nIdles * partial_migrate + s3_suspend) / interval)
         return ret
+    else:
+        raise Exception("Unknown migration method: %s" % method)
+
+def get_reintegration_interval(nActive, nIdles):
+    global configs
+    method = configs['method']
+    interval = int(configs['interval'])
+    full_migrate = float(configs['full_migrate'])
+    partial_resume = float(configs['partial_resume'])
+    s3_resume = float(configs['s3_resume'])
+
+    #print "method is %s" % method
+    if method == "partial":
+        return math.ceil( ((nActive + nIdles) * partial_resume + s3_resume) / interval)
+    elif method == "partial + full":
+        # active VMs are put in the remote server. don't migrate back
+        return math.ceil( (nIdles * partial_resume + s3_resume) / interval)
     else:
         raise Exception("Unknown migration method: %s" % method)
 
@@ -163,7 +192,7 @@ def get_idle_threshold(cur_sec):
     return threshold
 
 # assume that migratable_servers is sorted in descending order of idleness
-def decide_migrate_plan(migratable_servers):
+def decide_migrate_plan(migratable_servers, to_migrate):
     global configs
     nVDIs = int(configs['nVDIs'])
     
@@ -177,13 +206,11 @@ def decide_migrate_plan(migratable_servers):
 
     # just cut half the vdi servers
     count = 0
-    to_migrate = []
     for i in migratable_servers:
         if count < nVDIs / 2:
             to_migrate.append(i)
         count += 1
 
-    return to_migrate
 
 def decide_to_migrate(vm_states,vdi_states, cur_sec):
     global configs
@@ -209,8 +236,9 @@ def decide_to_migrate(vm_states,vdi_states, cur_sec):
         if idle_vms > threshold:
             migratable_servers.append(vdi_num)
 
+    to_migrate = []
     # decide the migration plan using a strategy
-    to_migrate = decide_migrate_plan(migratable_servers)
+    decide_migrate_plan(migratable_servers, to_migrate)
 
     if len(to_migrate) > 0:
         # copy the previous states first
@@ -235,6 +263,9 @@ def get_overall_state(vdi_states):
             break
         if i == S3:
             state = "migrated"
+            break
+        if i == REINTEGRATING:
+            state = "reintegrating"
             break
 
     return state
@@ -268,7 +299,7 @@ def resume_policy(vms_awake):
     # FIXME: only implement a policy here: any vm awake  > 5 will lead to the whole cluster to resume
     resume = False
     for i in vms_awake:
-        if i > 5:
+        if i > 1:
             resume = True
             break
     return resume
@@ -294,7 +325,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec):
             for i in range(0, nVMs): # iterate all vms of that vdi server
                 if vm_states[c*vms_per_vdi + i] == 1 and vm_states_before_migration[c*vms_per_vdi + i] == 0:
                     vms_woke_up_per_vdi[c] += 1
-    
+        c += 1
     resume = resume_policy(vms_woke_up_per_vdi)
     next_states = []
     if resume:
@@ -303,7 +334,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec):
         for i in range(0, nVDIs):
             next_states.append(vdi_states[-1][i])
 
-    return next_states
+    return (next_states, resume)
 
 # return how many idle and active vms will be migrated
 def get_migrating_vdi_stats(next_states, vm_states):
@@ -318,6 +349,25 @@ def get_migrating_vdi_stats(next_states, vm_states):
     j = 0
     for i in range(0, nVDIs):
         if next_states[i] == MIGRATING:
+            for j in range(0, vms_per_vdi):
+                if vm_states[i*vms_per_vdi + j] == 0:
+                    nIdles += 1
+                else:
+                    nActives += 1
+
+    return (nActives, nIdles)
+def get_reintegrating_vdi_stats(next_states, vm_states):
+    global configs
+    nVMs = int(configs['nVMs'])
+    nVDIs = int(configs['nVDIs'])
+    vms_per_vdi = nVMs / nVDIs
+    nActives = 0
+    nIdles = 0
+    
+    i = 0
+    j = 0
+    for i in range(0, nVDIs):
+        if next_states[i] == REINTEGRATING:
             for j in range(0, vms_per_vdi):
                 if vm_states[i*vms_per_vdi + j] == 0:
                     nIdles += 1
@@ -358,7 +408,20 @@ def make_decision(vm_states,vdi_states, cur_sec):
             # change the state is migrated, put correspoinding vdi server into low power mode
             next_states = update_states(vdi_states, MIGRATING, S3)
     if overall_state == "migrated":
-        next_states = decide_to_resume(vm_states, vdi_states, cur_sec)
+        (next_states, resume) = decide_to_resume(vm_states, vdi_states, cur_sec)
+        if resume == True:
+            (nActives, nIdles) = get_reintegrating_vdi_stats(next_states, vm_states)
+            reintegration_interval = get_reintegration_interval(nActives, nIdles)
+            cumulative_interval2 = 0
+    if overall_state == "reintegrating":
+        assert reintegration_interva > 0
+        assert  cumulative_interval2 >= 0  and cumulative_interval2 <= reintegration_interval
+        if cumulative_interval2 < reintegration_interval:
+            cumulative_interval2 += 1
+            next_states = vdi_states[-1]
+        else:
+            cumulative_interval2 = 0
+            next_states = update_states(vdi_states, REINTEGRATING, FULL)
 
     return next_states
 
@@ -369,5 +432,5 @@ if __name__ == '__main__':
     
     for inf in inputs.rstrip().split(","):
         if inf != '':
-            outf = inf+".out.csv"
+            outf = inf+".out2.csv"
             run(inf,outf)

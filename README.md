@@ -27,6 +27,7 @@ Simplication:
    or 1. 
 3. We only support migration/consolidate once. No multiple migration is implemented.
 4. When we resume, we resume the whole cluster. 
+5. I have not implemented the second migration optimization yet. 
 
 Next: 
 3. Select where to migrate
