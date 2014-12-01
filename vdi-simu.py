@@ -73,9 +73,12 @@ def run(i, outf):
     total_vdi_activeness_arr = []
 
     active_secs = 0
-
+    print_cnt2 = 0
     for line in inf:
         line = line.rstrip()
+
+        if len(line) <= 1:
+            continue
         activities = line.split(",")
         vdi_activeness = []
         for i in range(0, nVDIs):
@@ -86,12 +89,25 @@ def run(i, outf):
                 cur_vdi_states.append(FULL)
         else:
             cur_vdi_states = vdi_states[cur_sec -1]
+
+        assert len(vm_states) == nVMs
+        for j in range(0, nVMs):
+            vm_states[j] = 0
         # evaluate the current situation
         for i in range(0, nVMs):
-            if activities[i] == " 1":
+            a = int(activities[i].lstrip())
+            assert a >= 0
+            if a >= 1:
                 active_secs += 1
                 vm_states[i] = 1
                 vdi_activeness[i/vms_per_vdi] += (1.0/float(vms_per_vdi))
+            else:
+                vm_states[i] = 0
+        if cur_sec > 3*60*60* + 5  and print_cnt2 > 0:
+            print "vm_states: %s" % vm_states
+            print "line is %s" % line
+            print_cnt2 -= 1
+
         if sec_past >= interval:
             # Reaching the end of the interval, time to make decision
             next_vdi_states = make_decision(vm_states, vdi_states, cur_sec)
@@ -304,9 +320,12 @@ def resume_policy(vms_awake):
             break
     return resume
 
+print_cnt = 10
+
 def decide_to_resume(vm_states, vdi_states, cur_sec):
 
     global configs
+    global print_cnt
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
@@ -321,11 +340,20 @@ def decide_to_resume(vm_states, vdi_states, cur_sec):
 
     c = 0 
     for s in last_states:
-        if s == MIGRATED:
-            for i in range(0, nVMs): # iterate all vms of that vdi server
-                if vm_states[c*vms_per_vdi + i] == 1 and vm_states_before_migration[c*vms_per_vdi + i] == 0:
+        if s == S3:
+            for j in range(c*vms_per_vdi, (c+1)*vms_per_vdi): # iterate all vms of that vdi server
+                # print "j is %d" % j
+                if vm_states[j] == 1 and vm_states_before_migration[j] == 0:
                     vms_woke_up_per_vdi[c] += 1
         c += 1
+
+    if cur_sec > 3*60*60+1 and print_cnt > 0:
+        print "Current sec is %d" % cur_sec
+        print "Vm states: %s" % vm_states
+        print "vm_states_before_migration is %s" % vm_states_before_migration
+        print "vms_woke_up_per_vdi is %s" % vms_woke_up_per_vdi
+        print_cnt -= 1
+
     resume = resume_policy(vms_woke_up_per_vdi)
     next_states = []
     if resume:
@@ -378,8 +406,8 @@ def get_reintegrating_vdi_stats(next_states, vm_states):
                 
 def make_decision(vm_states,vdi_states, cur_sec):
     global configs    
-    global migration_interval
-    global cumulative_interval
+    global migration_interval,reintegration_interval
+    global cumulative_interval,cumulative_interval2
     next_states = []
     overall_state = get_overall_state(vdi_states)
     
@@ -414,7 +442,7 @@ def make_decision(vm_states,vdi_states, cur_sec):
             reintegration_interval = get_reintegration_interval(nActives, nIdles)
             cumulative_interval2 = 0
     if overall_state == "reintegrating":
-        assert reintegration_interva > 0
+        assert reintegration_interval > 0
         assert  cumulative_interval2 >= 0  and cumulative_interval2 <= reintegration_interval
         if cumulative_interval2 < reintegration_interval:
             cumulative_interval2 += 1
