@@ -182,7 +182,7 @@ def run(i, outf):
     of.close()
     print "Done. Result is stored in %s" % outf
     # print "Total active seconds: %d" % a1
-    return (power_saving, rate)
+    return (power_saving, rate, vm_active_vdi_migrated_secs)
 
 def get_migration_interval(nActive, nIdles):
     global configs
@@ -552,20 +552,124 @@ def make_decision(vm_states,vdi_states, cur_sec):
 
 
 if __name__ == '__main__':
-    
-    inputs = configs["inputs"]
-    cnt = 0
-    tsaving = 0.0
-    trate = 0.0
-    for inf in inputs.rstrip().split(","):
-        if inf != '':
-            outf = inf+".out4.csv"
-            (saving, rate)  = run(inf,outf)
-            tsaving += saving
-            print "Run No.%d: Saving: %f" %(cnt+1, saving)
-            print "Penalty Rate:  %f" % rate
-            trate += rate
-            cnt += 1
 
-    print "Average power saving: %f" %(tsaving/cnt)
-    print "Average penalty rate: %f" %(trate /cnt)
+    policy_type = configs['migration_policy_type']
+    
+    if policy_type == "static":
+        
+        of = "data/static-all-result"
+        f = open(of, "w+")
+        header = "Static migration threshold (idle%),Static resume threshold (active#), Power Saving (weekday),Penalty Seconds (weekday), Penalty Rate (weekday)"
+        header += ",Power Saving (weekend), Penalty Seconds (weekday), Penalty Rate (weekend)\n"
+        f.write(header)
+        rts = configs['resume_thresholds'].rstrip().split(",")
+        its = configs['idle_thresholds'].rstrip().split(",")
+        i = 0 
+        for i in range(0, len(rts)):
+            configs['resume_threshold'] = int(rts[i])
+            configs['idle_threshold'] = float(its[i])
+            
+            inputs = configs["inputs-weekday"]
+            configs["dayofweek"] = "weekday"
+            cnt = 0
+            tsaving = 0.0
+            trate = 0.0
+            tsecs = 0
+            for inf in inputs.rstrip().split(","):
+                if inf != '':
+                    outf = inf+".out-static-%d-%f.csv"%(int(rts[i]), float(its[i]))
+                    (saving, rate, active_secs)  = run(inf,outf)
+                    tsaving += saving
+                    trate += rate
+                    tsecs += active_secs
+                    cnt += 1
+            ave_weekday_saving = tsaving / cnt 
+            ave_weekday_secs = tsecs / cnt
+            ave_weekday_rate = trate / cnt
+            # dealing with weekend
+            inputs = configs["inputs-weekend"]
+            configs["dayofweek"] = "weekend"
+            cnt = 0
+            tsaving = 0.0
+            trate = 0.0
+            tsecs = 0
+            for inf in inputs.rstrip().split(","):
+                if inf != '':
+                    outf = inf+".out-static-%d-%f.csv"%(int(rts[i]), float(its[i]))
+                    #outf = inf+".out-weekend.csv"
+                    (saving, rate, active_secs)  = run(inf,outf)
+                    tsaving += saving
+                    trate += rate
+                    tsecs += active_secs
+                    cnt += 1
+            ave_weekend_saving = tsaving / cnt 
+            ave_weekend_secs = tsecs / cnt
+            ave_weekend_rate = trate / cnt
+            f.write("%f,%d,%f,%d,%f,%f,%d,%f\n"%(configs['idle_threshold'],configs['resume_threshold'],\
+                                         ave_weekday_saving, ave_weekday_secs, ave_weekday_rate, ave_weekend_saving,\
+                                           ave_weekend_secs, ave_weekend_rate))
+            
+
+        f.close()
+        print "Done. Result is in %s"%of
+
+    if policy_type == "dynamic":
+        
+        of = "data/dynamic-all-result"
+        f = open(of, "w+")
+        header = "Static Active VM# threshold, CDF threshold, Static resume threshold (active#)"
+        header += "Power Saving (weekday),Penalty Seconds (weekday), Penalty Rate (weekday)"
+        header += ",Power Saving (weekend), Penalty Seconds (weekday), Penalty Rate (weekend)\n"
+        f.write(header)
+        rts = configs['resume_thresholds_dynamic'].rstrip().split(",")
+        avs = configs['active_vm_num_thresholds'].rstrip().split(",")
+        cdfs = configs['active_vm_cdf_thresholds'].rstrip().split(",")
+        i = 0 
+        for i in range(0, len(rts)):
+            configs['active_vm_num_threshold'] = int(avs[i])
+            configs['active_vm_cdf_threshold'] = float(cdfs[i])
+            configs['resume_threshold'] = int(rts[i])
+            
+            inputs = configs["inputs-weekday"]
+            configs["dayofweek"] = "weekday"
+            cnt = 0
+            tsaving = 0.0
+            trate = 0.0
+            tsecs = 0
+            for inf in inputs.rstrip().split(","):
+                if inf != '':
+                    outf = inf+".out-dynamic-%d-%d-%f.csv"%(int(rts[i]), int(avs[i]),float(cdfs[i]))
+                    (saving, rate, active_secs)  = run(inf,outf)
+                    tsaving += saving
+                    trate += rate
+                    tsecs += active_secs
+                    cnt += 1
+            ave_weekday_saving = tsaving / cnt 
+            ave_weekday_secs = tsecs / cnt
+            ave_weekday_rate = trate / cnt
+            # dealing with weekend
+            inputs = configs["inputs-weekend"]
+            configs["dayofweek"] = "weekend"
+            cnt = 0
+            tsaving = 0.0
+            trate = 0.0
+            tsecs = 0
+            for inf in inputs.rstrip().split(","):
+                if inf != '':
+                    outf = inf+".out-dynamic-%d-%d-%f.csv"%(int(rts[i]), int(avs[i]),float(cdfs[i]))
+                    #outf = inf+".out-weekend.csv"
+                    (saving, rate, active_secs)  = run(inf,outf)
+                    tsaving += saving
+                    trate += rate
+                    tsecs += active_secs
+                    cnt += 1
+            ave_weekend_saving = tsaving / cnt 
+            ave_weekend_secs = tsecs / cnt
+            ave_weekend_rate = trate / cnt
+            f.write("%d,%f,%f,%f,%d,%f,%f,%d,%f\n"%(configs['active_vm_num_threshold'],configs['active_vm_cdf_threshold'], configs['resume_threshold'],\
+                                         ave_weekday_saving, ave_weekday_secs, ave_weekday_rate, ave_weekend_saving,\
+                                           ave_weekend_secs, ave_weekend_rate))
+            
+
+        f.close()
+        print "Done. Result is in %s"%of

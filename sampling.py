@@ -2,13 +2,13 @@
 # This script will sample from the raw data to 
 from random import randrange
 
-inf = "./data/raw_data.weekday"
-MAX_ROW = 1538
+inf = "./data/raw_data.weekend"
+MAX_ROW = 544
+# MAX_ROW = 1538
 
-
-day = "weekday"
-# day = "weekend"
-nVMs = 20
+# day = "weekday"
+day = "weekend"
+nVMs = 40
 nSamples = 10
 
 # generate a sorted random row numbers
@@ -16,8 +16,10 @@ def gen_rand_rows(n, rows):
 
     for i in range(0,n):
         r = randrange(MAX_ROW)
-#        print r
-        rows.append(randrange(MAX_ROW))
+        #        print r
+        while r in rows:
+            r = randrange(MAX_ROW)
+        rows.append(r)
     rows.sort()
 
 # main body
@@ -56,6 +58,12 @@ for i in range(0, nSamples):
     fout.close()
 
 print "Done"
+
+
+
+
+
+
 
 
 
