@@ -2,6 +2,7 @@
 
 import ConfigParser
 import math
+import linecache
 # a simple simulator program 
 
 SETTING = "./setting.conf"
@@ -213,21 +214,76 @@ def get_reintegration_interval(nActive, nIdles):
         return math.ceil( (nIdles * partial_resume + s3_resume) / interval)
     else:
         raise Exception("Unknown migration method: %s" % method)
-
-
-# query the traces data and return the minimun number idle VMs that decide whether the vdi is migratable
-def get_idle_threshold(cur_sec):
+# query the traces and find out the probability that the idle VMs will become active at the next e.g., 20 minutes
+def get_idle_probability(cur_sec):
     global configs
-    # FIXME: Only one stategy is implemented here: if the idle ratio is >70%
-    ratio = float(configs['idle_threshold'])
+    traces_file = configs['traces']
+    dayofweek = configs['dayofweek'] # weekday or weekend
+    interval_ahead = int(configs["interval_ahead"])
+    column_num = configs[dayofweek+"_"+str(interval_ahead)+"_min"] # construct the a string key e.g.,weekday_10_min 
+    assert column_num > 0
     
+    linenum = cur_sec / (5 * 60) + 1 # discounting first line. line start from 1
+    line = linecache.getline(traces_file, linenum)
+    splits = line.rstrip().split(",")
+    probability = float(splits[column_num-1]) / 100 # column_num - 1 because index starts from 0
+    assert probability >= 0 and probability <= 1
+    return probability
+
+def nCr(n,r):
+    f = math.factorial
+    return f(n) / f(r) / f(n-r)
+
+# cdf of there will be <= n out of m events that will happen, each of which has the probability p to happen (in the case, p the probability of an idle VM becoming active in the next, e.g., 20 minutes)
+def get_cdf(p, m, n):
+    ret = 0
+    pow = math.pow
+    for i in range(0, n+1):
+        # combination
+        c = nCr(m, i)
+        ret += c * pow(p,m) * pow(1-p, m-i) 
+    return ret
+
+# decide whether a vdi server is migratable at the second
+def is_migratable(cur_sec, idle_vms):
+    global configs
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
     
-    threshold = int( vms_per_vdi * ratio )
+    migration_policy_type = configs["migration_policy_type"]
+    
+    if migration_policy_type == "static":
+        ratio = float(configs['idle_threshold'])
+        
+        nVMs = int(configs['nVMs'])
+        nVDIs = int(configs['nVDIs'])
+        vms_per_vdi = nVMs / nVDIs
+        
+        threshold = int( vms_per_vdi * ratio )
 
-    return threshold
+        return idle_vms > threshold
+    if migration_policy_type == "dynamic":
+        interval_ahead = int(configs["interval_ahead"])
+        active_vm_num_threshold = int(configs["active_vm_num_threshold"])
+        active_vm_cdf_threshold = float(configs["active_vm_cdf_threshold"])
+        
+        cur_active_vms = vms_per_vdi - idle_vms 
+        
+        # how many idle vms are allowed to become active 
+        idle_to_active_allowed = active_vm_num_threshold - cur_active_vms 
+        if idle_to_active_allowed <= 0:
+            return False        # a shortcut, current active vms are greater than our threshold. that vdi server is not migratable at all
+        p = get_idle_probability(cur_sec)
+        assert p >=0 and p <= 1
+        cdf = get_cdf(p, idle_vms, idle_to_active_allowed)
+        assert cdf >=0 and cdf <= 1
+        if cdf >= active_vm_cdf_threshold:
+            return True
+        else:
+            return False
+    else:
+        raise Exception("Unknown policy type: %s" % migration_policy_type)
 
 # assume that migratable_servers is sorted in descending order of idleness
 def decide_migrate_plan(migratable_servers, to_migrate):
@@ -269,9 +325,9 @@ def decide_to_migrate(vm_states,vdi_states, cur_sec):
     # sort the vdi server from highest to lowest idle ratio (idle VM#)
     # check if the probability is greater than the threshold
     migratable_servers = []
-    threshold = get_idle_threshold(cur_sec) # the minimum number of idle VMs to decide whether a vdi is migratable
+    # threshold = get_idle_threshold(cur_sec) # the minimum number of idle VMs to decide whether a vdi is migratable
     for vdi_num, idle_vms in sorted(vdi_idleness.items(), key=lambda x: x[1], reverse=True):
-        if idle_vms > threshold:
+        if is_migratable(cur_sec,idle_vms) :
             migratable_servers.append(vdi_num)
 
     to_migrate = []
@@ -485,7 +541,7 @@ if __name__ == '__main__':
     trate = 0.0
     for inf in inputs.rstrip().split(","):
         if inf != '':
-            outf = inf+".out3.csv"
+            outf = inf+".out4.csv"
             (saving, rate)  = run(inf,outf)
             tsaving += saving
             print "Run No.%d: Saving: %f" %(cnt+1, saving)
