@@ -33,6 +33,11 @@ parser = ConfigParser.ConfigParser()
 parser.optionxform=str
 parser.read(SETTING)
 
+# debug print counts
+print_cnt = 0
+p_print_cnt = 10
+
+
 for section in parser.sections():
     for option in parser.options(section):
         try:
@@ -234,19 +239,22 @@ def nCr(n,r):
     f = math.factorial
     return f(n) / f(r) / f(n-r)
 
-# cdf of there will be <= n out of m events that will happen, each of which has the probability p to happen (in the case, p the probability of an idle VM becoming active in the next, e.g., 20 minutes)
+# cdf of there will be <= n out of m events that will happen, each of which has the probability p to happen (in the case, p is the probability of an idle VM becoming active in the next, e.g., 20 minutes)
 def get_cdf(p, m, n):
+    if m <= n:                  # allowed more than actual idle vms. Then the probability is 1
+        return 1
     ret = 0
     pow = math.pow
     for i in range(0, n+1):
         # combination
         c = nCr(m, i)
-        ret += c * pow(p,m) * pow(1-p, m-i) 
+        ret += c * pow(p,i) * pow(1-p, m-i) 
     return ret
 
 # decide whether a vdi server is migratable at the second
 def is_migratable(cur_sec, idle_vms):
-    global configs
+    global configs, p_print_cnt
+
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
@@ -269,15 +277,27 @@ def is_migratable(cur_sec, idle_vms):
         active_vm_cdf_threshold = float(configs["active_vm_cdf_threshold"])
         
         cur_active_vms = vms_per_vdi - idle_vms 
+        # FIXME: We do not account for current active at this moment
+        # cur_active_vms = 0
         
         # how many idle vms are allowed to become active 
         idle_to_active_allowed = active_vm_num_threshold - cur_active_vms 
         if idle_to_active_allowed <= 0:
             return False        # a shortcut, current active vms are greater than our threshold. that vdi server is not migratable at all
         p = get_idle_probability(cur_sec)
-        assert p >=0 and p <= 1
+        assert p >= 0 and p <= 1
+        if cur_sec > 12 * 60 * 60 and p_print_cnt > 0:
+            print "cur sec: %d" % cur_sec
+            print "p is %f" % p
+            p_print_cnt -= 1
+
         cdf = get_cdf(p, idle_vms, idle_to_active_allowed)
-        assert cdf >=0 and cdf <= 1
+        assert cdf >= 0 and cdf <= 1
+        if cur_sec > 12 * 60 * 60 and  p_print_cnt > 0:
+            print "cur sec: %d" % cur_sec
+            print "cdf is %f" % cdf
+            p_print_cnt -= 1
+        
         if cdf >= active_vm_cdf_threshold:
             return True
         else:
@@ -398,8 +418,6 @@ def resume_policy(vms_awake):
             resume = True
             break
     return resume
-
-print_cnt = 0
 
 def decide_to_resume(vm_states, vdi_states, cur_sec):
 
