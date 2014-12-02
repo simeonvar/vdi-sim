@@ -57,6 +57,10 @@ def run(i, outf):
     nVDIs = int(configs['nVDIs'])
     interval = int(configs['interval'])
     vms_per_vdi = nVMs/nVDIs
+
+    full_power = float(configs['full_power']) 
+    low_power =  float(configs['low_power'])
+
     inf = open(i, "r")
     of  = open(outf,"w+")
     # each line is one second of snapshot of NUM of desktops, 1 is active and 0 is idle
@@ -74,6 +78,8 @@ def run(i, outf):
 
     active_secs = 0
     print_cnt2 = 0
+    vm_active_vdi_migrated_secs = 0
+
     for line in inf:
         line = line.rstrip()
 
@@ -101,6 +107,8 @@ def run(i, outf):
                 active_secs += 1
                 vm_states[i] = 1
                 vdi_activeness[i/vms_per_vdi] += (1.0/float(vms_per_vdi))
+                if cur_vdi_states[i/vms_per_vdi] == S3:
+                    vm_active_vdi_migrated_secs += 1
             else:
                 vm_states[i] = 0
         if cur_sec > 3*60*60* + 5  and print_cnt2 > 0:
@@ -131,6 +139,8 @@ def run(i, outf):
     o+= ",VDIs in Full Power, TotalVMActiveness\n"
     of.write(o)
     i = 0
+
+    total_power = 0
     # number of seconds where activeness is greater than 0%
     for s,a in zip(vdi_states, total_vdi_activeness_arr):
         h = 14 + i / 3600
@@ -142,8 +152,12 @@ def run(i, outf):
         a1 = sum(a)/nVDIs
         for v in range(0, nVDIs):
             o += "%s,%f"%(state_str(s[v]),a[v])
+            
             if s[v] != S3 :
                 vdis_in_full += 1
+                total_power += full_power
+            else:
+                total_power += low_power
             if v != nVDIs-1:
                 o+=","
         o +=",%d,%f"%(vdis_in_full, a1)
@@ -152,9 +166,17 @@ def run(i, outf):
     # print "total state num: %d" % len(vdi_states)
     print "Total active seconds: %d" % active_secs 
     of.write("Total active seconds: %d" % active_secs + "\n")
+    of.seek(0,0)                # write to the beginning
+    of.write("Total power consumption: %f Joule\n" % total_power) 
+    power_saving = 1 - (total_power /(86400 * full_power * nVDIs))
+    of.write("Total power saving: %f\n" % power_saving) 
+    # rate of all the active seconds when there active VMs running on consolidated hosts
+    rate = float(vm_active_vdi_migrated_secs)/active_secs
+    of.write("Seconds when active VMs are operating on consolidated host: %d, %f of all total seconds\n"%(vm_active_vdi_migrated_secs, rate))
     of.close()
     print "Done. Result is stored in %s" % outf
     # print "Total active seconds: %d" % a1
+    return (power_saving, rate)
 
 def get_migration_interval(nActive, nIdles):
     global configs
@@ -197,7 +219,7 @@ def get_reintegration_interval(nActive, nIdles):
 def get_idle_threshold(cur_sec):
     global configs
     # FIXME: Only one stategy is implemented here: if the idle ratio is >70%
-    ratio = 0.7
+    ratio = float(configs['idle_threshold'])
     
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
@@ -312,15 +334,16 @@ def resume_policy(vms_awake):
     nVDIs = int(configs['nVDIs'])
     nVMs = int(configs['nVMs'])
     vms_per_vdi = nVMs / nVDIs 
+    resume_threshold = int(configs['resume_threshold'])
     # FIXME: only implement a policy here: any vm awake  > 5 will lead to the whole cluster to resume
     resume = False
     for i in vms_awake:
-        if i > 1:
+        if i > resume_threshold:
             resume = True
             break
     return resume
 
-print_cnt = 10
+print_cnt = 0
 
 def decide_to_resume(vm_states, vdi_states, cur_sec):
 
@@ -457,8 +480,18 @@ def make_decision(vm_states,vdi_states, cur_sec):
 if __name__ == '__main__':
     
     inputs = configs["inputs"]
-    
+    cnt = 0
+    tsaving = 0.0
+    trate = 0.0
     for inf in inputs.rstrip().split(","):
         if inf != '':
-            outf = inf+".out2.csv"
-            run(inf,outf)
+            outf = inf+".out3.csv"
+            (saving, rate)  = run(inf,outf)
+            tsaving += saving
+            print "Run No.%d: Saving: %f" %(cnt+1, saving)
+            print "Penalty Rate:  %f" % rate
+            trate += rate
+            cnt += 1
+
+    print "Average power saving: %f" %(tsaving/cnt)
+    print "Average penalty rate: %f" %(trate /cnt)
