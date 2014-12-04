@@ -145,7 +145,8 @@ def run(i, outf):
     o+= ",VDIs in Full Power, TotalVMActiveness\n"
     of.write(o)
     i = 0
-
+    # total time that all vdi servers running in low power states
+    total_low_power_time = 0
     total_power = 0
     # number of seconds where activeness is greater than 0%
     for s,a in zip(vdi_states, total_vdi_activeness_arr):
@@ -164,6 +165,7 @@ def run(i, outf):
                 total_power += full_power
             else:
                 total_power += low_power
+                total_low_power_time += 1
             if v != nVDIs-1:
                 o+=","
         o +=",%d,%f"%(vdis_in_full, a1)
@@ -182,7 +184,8 @@ def run(i, outf):
     of.close()
     print "Done. Result is stored in %s" % outf
     # print "Total active seconds: %d" % a1
-    return (power_saving, rate, vm_active_vdi_migrated_secs)
+
+    return (power_saving, total_low_power_time, vm_active_vdi_migrated_secs, active_secs)
 
 def get_migration_interval(nActive, nIdles):
     global configs
@@ -551,6 +554,29 @@ def make_decision(vm_states,vdi_states, cur_sec):
     return next_states
 
 
+def run_experiment(inputs, output_str):
+    cnt = 0
+    tsaving = 0.0
+    tcsecs = 0
+    tacsecs = 0
+    tasecs = 0
+    for inf in inputs.rstrip().split(","):
+        if inf != '':
+            outf = inf+output_str
+            (saving, csecs, tactive_con_secs, tactive_secs)  = run(inf,outf)
+            tsaving += saving
+            tcsecs += csecs
+            tacsecs += tactive_con_secs
+            tasecs += tactive_secs
+            cnt += 1
+    ave_saving = tsaving / cnt 
+    ave_consolidated_secs = tcsecs / cnt
+    ave_active_vm_on_consolidated_secs = tacsecs / cnt
+    ave_active_vm_secs = tasecs / cnt
+    
+    return (ave_saving, ave_consolidated_secs, ave_active_vm_on_consolidated_secs, ave_active_vm_secs)
+
+
 if __name__ == '__main__':
 
     policy_type = configs['migration_policy_type']
@@ -559,8 +585,9 @@ if __name__ == '__main__':
         
         of = "data/static-all-result"
         f = open(of, "w+")
-        header = "Static migration threshold (idle%),Static resume threshold (active#), Power Saving (weekday),Penalty Seconds (weekday), Penalty Rate (weekday)"
-        header += ",Power Saving (weekend), Penalty Seconds (weekday), Penalty Rate (weekend)\n"
+        header =  "Idle threshold, Resume threshold(aVM#), Policy,"
+        header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd),"
+        header += "Power Saving(we), Consol.Time(we), Active Consol. VMs Time(we), Ttl.Active.Time(we)\n"
         f.write(header)
         rts = configs['resume_thresholds'].rstrip().split(",")
         its = configs['idle_thresholds'].rstrip().split(",")
@@ -568,58 +595,39 @@ if __name__ == '__main__':
         for i in range(0, len(rts)):
             configs['resume_threshold'] = int(rts[i])
             configs['idle_threshold'] = float(its[i])
-            
+            configs["dayofweek"] = "weekday"            
             inputs = configs["inputs-weekday"]
-            configs["dayofweek"] = "weekday"
-            cnt = 0
-            tsaving = 0.0
-            trate = 0.0
-            tsecs = 0
-            for inf in inputs.rstrip().split(","):
-                if inf != '':
-                    outf = inf+".out-static-%d-%f.csv"%(int(rts[i]), float(its[i]))
-                    (saving, rate, active_secs)  = run(inf,outf)
-                    tsaving += saving
-                    trate += rate
-                    tsecs += active_secs
-                    cnt += 1
-            ave_weekday_saving = tsaving / cnt 
-            ave_weekday_secs = tsecs / cnt
-            ave_weekday_rate = trate / cnt
+            output_postfix = ".out-static-%d-%f.csv"%(int(rts[i]), float(its[i]))
+            (ave_weekday_saving, ave_weekday_consolidated_secs, \
+             ave_weekday_active_vm_on_consolidated_secs, ave_weekday_active_vm_secs) = run_experiment(inputs, output_postfix)
+            
             # dealing with weekend
             inputs = configs["inputs-weekend"]
             configs["dayofweek"] = "weekend"
-            cnt = 0
-            tsaving = 0.0
-            trate = 0.0
-            tsecs = 0
-            for inf in inputs.rstrip().split(","):
-                if inf != '':
-                    outf = inf+".out-static-%d-%f.csv"%(int(rts[i]), float(its[i]))
-                    #outf = inf+".out-weekend.csv"
-                    (saving, rate, active_secs)  = run(inf,outf)
-                    tsaving += saving
-                    trate += rate
-                    tsecs += active_secs
-                    cnt += 1
-            ave_weekend_saving = tsaving / cnt 
-            ave_weekend_secs = tsecs / cnt
-            ave_weekend_rate = trate / cnt
-            f.write("%f,%d,%f,%d,%f,%f,%d,%f\n"%(configs['idle_threshold'],configs['resume_threshold'],\
-                                         ave_weekday_saving, ave_weekday_secs, ave_weekday_rate, ave_weekend_saving,\
-                                           ave_weekend_secs, ave_weekend_rate))
-            
+            (ave_weekend_saving, ave_weekend_consolidated_secs, \
+             ave_weekend_active_vm_on_consolidated_secs, ave_weekend_active_vm_secs) = run_experiment(inputs, output_postfix)
 
+            oline = "%f,%d,"%(configs['idle_threshold'],configs['resume_threshold'])
+            oline += "idle_thrshld=%.1f resume=%d,"%(configs['idle_threshold'],configs['resume_threshold'])
+            oline += "%f, %d, %d, %d, "% (ave_weekday_saving, ave_weekday_consolidated_secs, ave_weekday_active_vm_on_consolidated_secs, ave_weekday_active_vm_secs)
+            oline += "%f, %d, %d, %d \n"% (ave_weekend_saving, ave_weekend_consolidated_secs, ave_weekend_active_vm_on_consolidated_secs, ave_weekend_active_vm_secs)
+            f.write(oline)
+            
         f.close()
         print "Done. Result is in %s"%of
+
+    # a hack to let it run on dynamic policies
+    policy_type = "dynamic"
+    configs['migration_policy_type'] = "dynamic"    
 
     if policy_type == "dynamic":
         
         of = "data/dynamic-all-result"
         f = open(of, "w+")
-        header = "Static Active VM# threshold, CDF threshold, Static resume threshold (active#)"
-        header += "Power Saving (weekday),Penalty Seconds (weekday), Penalty Rate (weekday)"
-        header += ",Power Saving (weekend), Penalty Seconds (weekday), Penalty Rate (weekend)\n"
+        header = "Active VM# threshold, CDF, Resume threshold(aVM#), Policy,"
+        header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd),"
+        header += "Power Saving(we), Consol.Time(we), Active Consol. VMs Time(we), Ttl.Active.Time(we)\n"
+
         f.write(header)
         rts = configs['resume_thresholds_dynamic'].rstrip().split(",")
         avs = configs['active_vm_num_thresholds'].rstrip().split(",")
@@ -632,44 +640,26 @@ if __name__ == '__main__':
             
             inputs = configs["inputs-weekday"]
             configs["dayofweek"] = "weekday"
-            cnt = 0
-            tsaving = 0.0
-            trate = 0.0
-            tsecs = 0
-            for inf in inputs.rstrip().split(","):
-                if inf != '':
-                    outf = inf+".out-dynamic-%d-%d-%f.csv"%(int(rts[i]), int(avs[i]),float(cdfs[i]))
-                    (saving, rate, active_secs)  = run(inf,outf)
-                    tsaving += saving
-                    trate += rate
-                    tsecs += active_secs
-                    cnt += 1
-            ave_weekday_saving = tsaving / cnt 
-            ave_weekday_secs = tsecs / cnt
-            ave_weekday_rate = trate / cnt
+            output_postfix = ".out-dynamic-%d-%d-%f.csv"%(int(rts[i]), int(avs[i]),float(cdfs[i]))
+            (ave_weekday_saving, ave_weekday_consolidated_secs, \
+             ave_weekday_active_vm_on_consolidated_secs, ave_weekday_active_vm_secs) = run_experiment(inputs, output_postfix)
+            
             # dealing with weekend
             inputs = configs["inputs-weekend"]
             configs["dayofweek"] = "weekend"
-            cnt = 0
-            tsaving = 0.0
-            trate = 0.0
-            tsecs = 0
-            for inf in inputs.rstrip().split(","):
-                if inf != '':
-                    outf = inf+".out-dynamic-%d-%d-%f.csv"%(int(rts[i]), int(avs[i]),float(cdfs[i]))
-                    #outf = inf+".out-weekend.csv"
-                    (saving, rate, active_secs)  = run(inf,outf)
-                    tsaving += saving
-                    trate += rate
-                    tsecs += active_secs
-                    cnt += 1
-            ave_weekend_saving = tsaving / cnt 
-            ave_weekend_secs = tsecs / cnt
-            ave_weekend_rate = trate / cnt
-            f.write("%d,%f,%f,%f,%d,%f,%f,%d,%f\n"%(configs['active_vm_num_threshold'],configs['active_vm_cdf_threshold'], configs['resume_threshold'],\
-                                         ave_weekday_saving, ave_weekday_secs, ave_weekday_rate, ave_weekend_saving,\
-                                           ave_weekend_secs, ave_weekend_rate))
-            
+            (ave_weekend_saving, ave_weekend_consolidated_secs, \
+             ave_weekend_active_vm_on_consolidated_secs, ave_weekend_active_vm_secs) = run_experiment(inputs, output_postfix)
+
+            oline = "%d,%f,%d,"%(configs['active_vm_num_threshold'],configs['active_vm_cdf_threshold'], configs['resume_threshold'])
+            oline += "acitve_thrhold=%d;cdf=%.1f;resume=%d,"%(configs['active_vm_num_threshold'],configs['active_vm_cdf_threshold'], configs['resume_threshold'])
+            oline += "%f, %d, %d, %d, "% (ave_weekday_saving, ave_weekday_consolidated_secs, ave_weekday_active_vm_on_consolidated_secs, ave_weekday_active_vm_secs)
+            oline += "%f, %d, %d, %d \n"% (ave_weekend_saving, ave_weekend_consolidated_secs, ave_weekend_active_vm_on_consolidated_secs, ave_weekend_active_vm_secs)
+            f.write(oline)
 
         f.close()
         print "Done. Result is in %s"%of
+
+
+
+
+
