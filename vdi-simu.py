@@ -546,36 +546,38 @@ def resume_policy(vms_awake):
 def decide_to_resume(vm_states, vdi_states, cur_sec):
 
     global configs
-    global print_cnt
+    global cur_vm_vdi_map
+
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
 
-    # how many vms becomes active from idle from 
+    idle_vm_consumption = float(configs['idle_vm_consumption'])
+    slack = float(configs['slack'])
+    tightness = float(configs['tightness'])
+
     # FIXME: only considers the partial migration. Full migration is not supported
-    # FIXME: only counts the machine idle that turns into active from idle
-    last_states = vdi_states[-1]
-    vms_woke_up_per_vdi = []
-    for i in range(0, nVDIs):   # init the result
-        vms_woke_up_per_vdi.append(0)
+    # FIXME: if Resume, then resume all of the them. I didn't differentiate one or more vdis
 
-    c = 0 
-    for s in last_states:
-        if s == S3:
-            for j in range(c*vms_per_vdi, (c+1)*vms_per_vdi): # iterate all vms of that vdi server
-                # print "j is %d" % j
-                if vm_states[j] == 1 and vm_states_before_migration[j] == 0:
-                    vms_woke_up_per_vdi[c] += 1
-        c += 1
+    # see if the capacity is exceeded 
+    vdi_consumption = []
+    for i in range(0, nVDIs):   # init 
+        vdi_consumption.append(0)
+    for i in range(0, nVMs):
+        vdi_index = cur_vm_vdi_map[i]
+        assert vdi_states[-1][vdi_index] != S3
+        if vm_states[i] == 0:   # idle
+            vdi_consumption[vdi_index] += idle_vm_consumption
+        if vm_states[i] == 1:   # active
+            vdi_consumption[vdi_index] += 1
 
-    if cur_sec > 3*60*60+1 and print_cnt > 0:
-        print "Current sec is %d" % cur_sec
-        print "Vm states: %s" % vm_states
-        print "vm_states_before_migration is %s" % vm_states_before_migration
-        print "vms_woke_up_per_vdi is %s" % vms_woke_up_per_vdi
-        print_cnt -= 1
+    resume = False
+    # scan the list and see if any vdi exceeds the capacity
+    for i in range(0, nVDIs):
+        if vdi_consumption[i] > vms_per_vdi * (slack + 1):
+            resume = True
+            break
 
-    resume = resume_policy(vms_woke_up_per_vdi)
     next_states = []
     if resume:
         next_states = update_states(vdi_states, S3, REINTEGRATING)
