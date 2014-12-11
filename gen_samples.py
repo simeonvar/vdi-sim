@@ -1,16 +1,15 @@
-
 #Generate samples that can use to verify the correctness of result
 
 import os, sys
 
-nVMs = 20
+nVMs = 40
 lnum = 86400                    # total line numbers, == second# of a day
 
 # generate a sample that are idle for the 3 hours, then all active for the rest of the day. 
 # to see if the simulator will resume.
 def gen_sam1():
     print "Generating sample1"
-    o1 = "./gen_sam1"
+    o1 = "./data/gen_sam2"
     f = open(o1, "w+")
     t1 = 3 * 60 * 60
     for i in range(0, lnum):        
