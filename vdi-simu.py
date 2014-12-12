@@ -43,7 +43,7 @@ parser.read(SETTING)
 
 # debug print counts
 print_cnt = 0
-p_print_cnt = 10
+p_print_cnt = 0
 
 for section in parser.sections():
     for option in parser.options(section):
@@ -53,6 +53,30 @@ for section in parser.sections():
             value=parser.get(section,option)
         configs[option] = value
         # print "Parser >>> ... ", option,value,type(value)
+
+# policy parameters
+nVMs = int(configs['nVMs'])
+nVDIs = int(configs['nVDIs'])
+vms_per_vdi = nVMs / nVDIs
+idle_vm_consumption = float(configs['idle_vm_consumption'])
+interval = int(configs['interval'])
+full_power = float(configs['full_power']) 
+low_power =  float(configs['low_power'])
+method = configs['method']
+interval = int(configs['interval'])
+full_migrate = float(configs['full_migrate'])
+partial_migrate = float(configs['partial_migrate'])
+s3_suspend = float(configs['s3_suspend'])
+traces_file = configs['traces']
+dayofweek = configs['dayofweek'] # weekday or weekend
+interval_ahead = int(configs["interval_ahead"])
+migration_policy_type = configs["migration_policy_type"]
+slack = float(configs['slack'])
+tightness = float(configs['tightness'])
+resume_threshold = int(configs['resume_threshold'])
+partial_resume = float(configs['partial_resume'])
+s3_resume = float(configs['s3_resume'])
+# end of policy parameters
 
 def state_str(s):
     if s == FULL:
@@ -65,8 +89,6 @@ def state_str(s):
         return "reintegrating"
 
 def check_state(cur_vdi_states, next_vdi_states):
-    global configs
-    nVDIs = int(configs['nVDIs'])
     resume = False
     migrate = False
     cnt1 = 0
@@ -85,12 +107,7 @@ def check_state(cur_vdi_states, next_vdi_states):
 
 # writing a line to the five-interval results
 def output_interval(of2, vm_states, vdi_states, cur_sec):
-    global configs
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
-    
+
     line = "%d, "% cur_sec
     # format the time
     h = (14 + cur_sec / 3600) % 24
@@ -139,14 +156,6 @@ def output_interval(of2, vm_states, vdi_states, cur_sec):
     of2.write(line)
 
 def run(i, outf):
-    global configs, DAYS
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    interval = int(configs['interval'])
-    vms_per_vdi = nVMs/nVDIs
-
-    full_power = float(configs['full_power']) 
-    low_power =  float(configs['low_power'])
 
     inf = open(i, "r")
     tmp = outf
@@ -292,12 +301,7 @@ def run(i, outf):
     return (power_saving, total_low_power_time, vm_active_vdi_migrated_secs, active_secs, migration_times, resume_times)
 
 def get_migration_interval(nActive, nIdles):
-    global configs
-    method = configs['method']
-    interval = int(configs['interval'])
-    full_migrate = float(configs['full_migrate'])
-    partial_migrate = float(configs['partial_migrate'])
-    s3_suspend = float(configs['s3_suspend'])
+
     assert full_migrate > 0
     assert partial_migrate > 0 
 
@@ -311,12 +315,6 @@ def get_migration_interval(nActive, nIdles):
         raise Exception("Unknown migration method: %s" % method)
 
 def get_reintegration_interval(nActive, nIdles):
-    global configs
-    method = configs['method']
-    interval = int(configs['interval'])
-    full_migrate = float(configs['full_migrate'])
-    partial_resume = float(configs['partial_resume'])
-    s3_resume = float(configs['s3_resume'])
 
     #print "method is %s" % method
     if method == "partial":
@@ -328,13 +326,10 @@ def get_reintegration_interval(nActive, nIdles):
         raise Exception("Unknown migration method: %s" % method)
 # query the traces and find out the probability that the idle VMs will become active at the next e.g., 20 minutes
 def get_idle_probability(cur_sec):
-    global configs
-    traces_file = configs['traces']
-    dayofweek = configs['dayofweek'] # weekday or weekend
-    interval_ahead = int(configs["interval_ahead"])
+    
     column_num = configs[dayofweek+"_"+str(interval_ahead)+"_min"] # construct the a string key e.g.,weekday_10_min 
     assert column_num > 0
-    
+
     linenum = cur_sec / (5 * 60) + 1 # discounting first line. line start from 1
     line = linecache.getline(traces_file, linenum)
     splits = line.rstrip().split(",")
@@ -360,13 +355,6 @@ def get_cdf(p, m, n):
 
 # decide whether a vdi server is migratable at the second
 def is_migratable(cur_sec, idle_vms, active_vms):
-    global configs, p_print_cnt
-
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-    
-    migration_policy_type = configs["migration_policy_type"]
     
     if migration_policy_type == "static":
         ratio = float(configs['idle_threshold'])        
@@ -414,11 +402,6 @@ def is_migratable(cur_sec, idle_vms, active_vms):
 
 # return the total resource needed for this VDI
 def get_resource_needed(index, vdi_idleness, vdi_activeness):
-    global configs
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
 
     idle_vms = vdi_idleness[index]
     idle_vm_resource_needed = idle_vms * idle_vm_consumption
@@ -428,14 +411,6 @@ def get_resource_needed(index, vdi_idleness, vdi_activeness):
 
 # scanning the vm states in the cur_vm_vdi_map
 def get_resource_consumed(vdi_index, cur_vm_vdi_map, vm_states):
-    global configs
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
-    slack = float(configs['slack'])
-    tightness = float(configs['tightness'])
 
     rcsmd = 0
     for i in range(0, nVMs):
@@ -526,16 +501,6 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
 # assume that migratable_servers is sorted in descending order of idleness
 def decide_what_to_migrate(migratable_servers, dest_host_num,  to_migrate, vdi_idleness, vdi_activeness, total_resource_available, s3_flag):
 
-    # FIXME: refactor this whole chunk of init code
-    global configs, cur_vm_vdi_map
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
-    slack = float(configs['slack'])
-    tightness = float(configs['tightness'])
-        
     total_resource_needed = 0  
     for i in migratable_servers:
         total_resource_needed += get_resource_needed(i, vdi_idleness, vdi_activeness)
@@ -556,13 +521,7 @@ def decide_what_to_migrate(migratable_servers, dest_host_num,  to_migrate, vdi_i
     return (total_resource_available, dest_host_num)
 
 def debug_print(vdi_states, vdi_idleness, vdi_activeness, cur_sec):
-    global configs, cur_vm_vdi_map
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-    slack = float(configs['slack'])
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
-    
+
     print "cur_sec, vdi#, state, resource consumed"
     for i in range(0, nVDIs):
         out = "%d,"%cur_sec
@@ -578,12 +537,6 @@ def debug_print(vdi_states, vdi_idleness, vdi_activeness, cur_sec):
 # s3_flag means whether there are already consolidated host,
 # if true, then we use cur_vm_vdi_map
 def decide_to_migrate(vm_states,vdi_states, cur_sec, s3_flag, of2):
-    global configs, cur_vm_vdi_map
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-    slack = float(configs['slack'])
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
 
     # get idleness
     vdi_idleness = {}
@@ -704,11 +657,6 @@ def record_vm_states(vm_states):
         c += 1
 
 def resume_policy(vms_awake):
-    global configs
-    nVDIs = int(configs['nVDIs'])
-    nVMs = int(configs['nVMs'])
-    vms_per_vdi = nVMs / nVDIs 
-    resume_threshold = int(configs['resume_threshold'])
     # FIXME: only implement a policy here: any vm awake  > 5 will lead to the whole cluster to resume
     resume = False
     for i in vms_awake:
@@ -724,15 +672,6 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
 
     assert len(cur_vm_vdi_map) > 0
     
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
-
-    idle_vm_consumption = float(configs['idle_vm_consumption'])
-    slack = float(configs['slack'])
-    tightness = float(configs['tightness'])
-
-    # FIXME: only considers the partial migration. Full migration is not supported
     # FIXME: if Resume, then resume all of the them. I didn't differentiate one or more vdis
 
     # see if the capacity is exceeded 
@@ -789,10 +728,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
 
 # return how many idle and active vms will be migrated
 def get_migrating_vdi_stats(next_states, vm_states):
-    global configs
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
+
     nActives = 0
     nIdles = 0
     
@@ -808,10 +744,7 @@ def get_migrating_vdi_stats(next_states, vm_states):
 
     return (nActives, nIdles)
 def get_reintegrating_vdi_stats(next_states, vm_states):
-    global configs
-    nVMs = int(configs['nVMs'])
-    nVDIs = int(configs['nVDIs'])
-    vms_per_vdi = nVMs / nVDIs
+
     nActives = 0
     nIdles = 0
     
@@ -955,60 +888,6 @@ if __name__ == '__main__':
             
         f.close()
         print "Done. Result is in %s"%of
-
-    # a hack to let it run on dynamic policies
-    # policy_type = "dynamic"
-    configs['migration_policy_type'] = "dynamic"    
-
-    if policy_type == "dynamic":
-        
-        of = "data/dynamic-all-result.csv"
-        f = open(of, "w+")
-        header = "Active VM# threshold, CDF, Resume threshold(aVM#), Policy,"
-        header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd), Migration#, Resume#"
-        header += "Power Saving(we), Consol.Time(we), Active Consol. VMs Time(we), Ttl.Active.Time(we), Migration#, Resume#\n"
-
-        f.write(header)
-        rts = configs['resume_thresholds_dynamic'].rstrip().split(",")
-        avs = configs['active_vm_num_thresholds'].rstrip().split(",")
-        cdfs = configs['active_vm_cdf_thresholds'].rstrip().split(",")
-        sts = configs['slacks'].rstrip().split(",")
-        tts = configs['tightnesses'].rstrip().split(",")
-
-        i = 0 
-        for i in range(0, len(rts)):
-            configs['active_vm_num_threshold'] = int(avs[i])
-            configs['active_vm_cdf_threshold'] = float(cdfs[i])
-            configs['resume_threshold'] = int(rts[i])
-            configs['slack'] = float(sts[i])
-            configs['tightness'] = float(tts[i])
-            
-            inputs = configs["inputs-weekday"]
-            configs["dayofweek"] = "weekday"
-            output_postfix = ".out-dynamic-slack%.1f-tightness%.1f-%d-%.1f"%(float(sts[i]), float(tts[i]), int(avs[i]),float(cdfs[i]))
-
-            (ave_weekday_saving, ave_weekday_consolidated_secs, \
-             ave_weekday_active_vm_on_consolidated_secs,ave_weekday_active_vm_secs,\
-             ave_weekday_migration_times, ave_weekday_resume_times) = run_experiment(inputs, output_postfix)
-            
-            # dealing with weekend
-            inputs = configs["inputs-weekend"]
-            configs["dayofweek"] = "weekend"
-            (ave_weekend_saving, ave_weekend_consolidated_secs, \
-             ave_weekend_active_vm_on_consolidated_secs, ave_weekend_active_vm_secs,\
-             ave_weekend_migration_times, ave_weekend_resume_times) = run_experiment(inputs, output_postfix)
-
-            oline = "%d,%f,%d,"%(configs['active_vm_num_threshold'], configs['active_vm_cdf_threshold'],configs['resume_threshold'])
-            oline += "active_vm=%d cdf=%.1f slack=%.1f tightness=%.1f,"%(configs['active_vm_num_threshold'],configs['active_vm_cdf_threshold'], configs['slack'], configs['tightness'])
-
-            oline += "%f, %d, %d, %d, %d, %d,"% (ave_weekday_saving, ave_weekday_consolidated_secs/3600, ave_weekday_active_vm_on_consolidated_secs/3600,ave_weekday_active_vm_secs/3600,ave_weekday_migration_times,ave_weekday_resume_times)
-            oline += "%f, %d, %d, %d, %d, %d \n"% (ave_weekend_saving, ave_weekend_consolidated_secs/3600,ave_weekend_active_vm_on_consolidated_secs/3600,ave_weekend_active_vm_secs/3600,ave_weekend_migration_times,ave_weekend_resume_times)
-
-            f.write(oline)
-
-        f.close()
-        print "Done. Result is in %s"%of
-
 
 
 
