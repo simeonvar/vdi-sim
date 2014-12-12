@@ -2,7 +2,7 @@
 
 import os, sys
 
-nVMs = 40
+nVMs = 80
 lnum = 86400                    # total line numbers, == second# of a day
 
 # generate a sample that are idle for the 3 hours, then all active for the rest of the day. 

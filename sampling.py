@@ -2,14 +2,14 @@
 # This script will sample from the raw data to 
 from random import randrange
 
-inf = "./data/raw_data.weekend"
-MAX_ROW = 544
-# MAX_ROW = 1538
+inf = "./data/raw_data.weekday"
+# MAX_ROW = 544
+MAX_ROW = 1538
 
-# day = "weekday"
-day = "weekend"
-nVMs = 40
-nSamples = 10
+day = "weekday"
+# day = "weekend"
+nVMs = 80
+nSamples = 5
 
 # generate a sorted random row numbers
 def gen_rand_rows(n, rows):
@@ -37,7 +37,7 @@ for i in range(0, nSamples):
     lines = []
     for line in fin:
         if linecnt == rows[ri]:
-            print "gettig line %d" % rows[ri]
+            # print "gettig line %d" % rows[ri]
             splits = line.rstrip().split(",")
             lines.append(splits)
             ri += 1
@@ -56,6 +56,7 @@ for i in range(0, nSamples):
     
     fin.close()
     fout.close()
+    print "Result stored in %s" % outf
 
 print "Done"
 
