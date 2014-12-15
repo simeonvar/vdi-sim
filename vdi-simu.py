@@ -29,10 +29,25 @@ vm_states_before_migration = []
 reintegration_interval = 0
 cumulative_interval2 = 0
 
+
+# vm object, that stores vm state, the original and current host. 
+# If origin != curhost, it indicates that it is a remote vms. Ir
+class vm:
+    origin = -1
+    curhost = -1
+    state = -1
+    def __init__(self, origin, curhost, state):
+        self.state = state
+        self.curhost = curhost
+        self.origin = origin
+
 # current vm-vdi plan map
 # by default, vms are assigned according to their index, e.g., vdi_num = vm_index / vms_per_vdi
 # after migration, some vms will be assigned to another vdi server, so their vdi num will change
-cur_vm_vdi_map = {}
+
+# global vm array that stores the vm information
+vms = []
+
 # record the vm-vdi map changes
 vm_vdi_logs = {}
 
@@ -131,9 +146,9 @@ def output_interval(of2, vm_states, vdi_states, cur_sec):
         resource = 0
         activeness = 0 
         if has_s3:              # it is consolidated state, so scan all vms 
-            assert len(cur_vm_vdi_map) > 0 
-            for j in range(0, nVMs):
-                if cur_vm_vdi_map[j] == i:
+            assert len(vms) > 0 
+            for j, v in enumerate(vms):
+                if v.curhost == i:
                     if vm_states[j] >= 1:
                         active_vm += 1
                         resource += 1
@@ -409,12 +424,12 @@ def get_resource_needed(index, vdi_idleness, vdi_activeness):
     resource_needed = (idle_vm_resource_needed + active_vm_resource_needed)
     return resource_needed
 
-# scanning the vm states in the cur_vm_vdi_map
-def get_resource_consumed(vdi_index, cur_vm_vdi_map, vm_states):
+# scanning the vm states in the vms array
+def get_resource_consumed(vdi_index, vm_states):
 
     rcsmd = 0
-    for i in range(0, nVMs):
-        if cur_vm_vdi_map[i] == vdi_index:
+    for i,v in enumerate(vms):
+        if v.curhost == vdi_index:
             rneeded = 1
             if vm_states[i] == 0: # idle vm
                 rneeded = idle_vm_consumption
@@ -423,7 +438,7 @@ def get_resource_consumed(vdi_index, cur_vm_vdi_map, vm_states):
 
 def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_activeness,  vm_states, cur_sec, s3_flag):
     global configs
-    global cur_vm_vdi_map
+
     global vm_vdi_logs
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
@@ -433,18 +448,21 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
     slack = float(configs['slack'])
     tightness = float(configs['tightness'])
 
-    # init the map first,
+    # init the vms array first,
     # by default, the vms are assigned to vdis according to their index
-    #cur_vm_vdi_map = {}
     if not s3_flag:
+        # delete all elements first if not empty
+        if len(vms) != 0:
+            del vms[:]
         for i in range(0, nVMs):
-            cur_vm_vdi_map[i] = i / vms_per_vdi
+            origin = i / vms_per_vdi
+            vms.append(vm(origin, origin, -1))
 
     for i in to_migrate:
         # for each vm in this vdi to migrate
         # for v in range(0, vms_per_vdi):
         for v in range(0, nVMs):
-            if cur_vm_vdi_map[v] != i: # all the vms residing in this host
+            if vms[v].curhost != i: # all the vms residing in this host
                 continue
             vm_index = v
             vm_state = vm_states[vm_index]
@@ -455,7 +473,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
             # look for a dest host to migrate
             for j in range(0, nVDIs):
                 if j not in to_migrate and vdi_states[-1][j] == FULL: # make sure the dest host is not a S3 host
-                    rconsumed = get_resource_consumed(j, cur_vm_vdi_map, vm_states)
+                    rconsumed = get_resource_consumed(j, vm_states)
                     #print "rconsumed is %f" % rconsumed
                     if (rconsumed + rneeded) <= tightness*(1+slack)*vms_per_vdi:
                         dest = j
@@ -475,13 +493,13 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                 for j in range(0, nVDIs):
                     if j in to_migrate:
                         print "VDI# %d is in to_migrate"% j
-                        total_resource_needed += get_resource_consumed(j, cur_vm_vdi_map, vm_states)
+                        total_resource_needed += get_resource_consumed(j, vm_states)
                         continue
                     if vdi_states[-1][j] != FULL:
                         print "VDI# %d is not FULL"% j
                         continue
                     if j not in to_migrate and vdi_states[-1][j] == FULL: # make sure the dest host is not a S3 host
-                        rconsumed = get_resource_consumed(j, cur_vm_vdi_map, vm_states)
+                        rconsumed = get_resource_consumed(j, vm_states)
                         #print "rconsumed is %f" % rconsumed
                         print "rconsumed + rneeded = %.1f"%(rconsumed + rneeded)
                         print "tightness*(1+slack)*vms_per_vdi = %.1f"%(tightness*(1+slack)*vms_per_vdi)
@@ -491,11 +509,11 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                             print "VDI# %d does not have enough resources"% j
                 assert False
             # update the map
-            cur_vm_vdi_map[vm_index] = dest
+            vms[vm_index].curhost = dest
     # put the update in the logs
-    vm_vdi_logs[cur_sec]= cur_vm_vdi_map.copy()
+    vm_vdi_logs[cur_sec]= vms.copy()
 
-    assert len(cur_vm_vdi_map) > 0
+    assert len(vms) > 0
     assert len(vm_vdi_logs) > 0
     #print "The end of decide to migrate"
 # assume that migratable_servers is sorted in descending order of idleness
@@ -535,7 +553,7 @@ def debug_print(vdi_states, vdi_idleness, vdi_activeness, cur_sec):
 
 
 # s3_flag means whether there are already consolidated host,
-# if true, then we use cur_vm_vdi_map
+# if true, then we use vms
 def decide_to_migrate(vm_states,vdi_states, cur_sec, s3_flag, of2):
 
     # get idleness
@@ -557,7 +575,7 @@ def decide_to_migrate(vm_states,vdi_states, cur_sec, s3_flag, of2):
             vdi_activeness[i] = 0
             
         for i in range(0, nVMs):
-            vdi_index = cur_vm_vdi_map[i]
+            vdi_index = vms[i].curhost
             assert vdi_states[-1][vdi_index] == FULL
             if vm_states[i] == 0:   # idle
                 vdi_idleness[vdi_index] += 1
@@ -668,9 +686,7 @@ def resume_policy(vms_awake):
 def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
 
     global configs
-    global cur_vm_vdi_map
-
-    assert len(cur_vm_vdi_map) > 0
+    assert len(vms) > 0
     
     # FIXME: if Resume, then resume all of the them. I didn't differentiate one or more vdis
 
@@ -679,7 +695,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
     for i in range(0, nVDIs):   # init 
         vdi_consumption.append(0)
     for i in range(0, nVMs):
-        vdi_index = cur_vm_vdi_map[i]
+        vdi_index = vms[i].curhost
         assert vdi_states[-1][vdi_index] != S3
         if vm_states[i] == 0:   # idle
             vdi_consumption[vdi_index] += idle_vm_consumption
@@ -704,7 +720,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
         for v in range(0, nVDIs):
             if vdis_to_resume[v]:
                 for i in range(0, nVMs):
-                    vdi_index = cur_vm_vdi_map[i]
+                    vdi_index = vms[i].curhost
                     if vdi_index == v and (i < v * vms_per_vdi or i >= (v+1) * vms_per_vdi):
                         src_host = i / vms_per_vdi
                         # debug output, it should happen.
@@ -715,7 +731,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
                         last_states[src_host] = REINTEGRATING # bring the src host back to live
                         # update the cur map
                         for j in range(0, vms_per_vdi):
-                            cur_vm_vdi_map[j+src_host * vms_per_vdi] = src_host
+                            vms[j+src_host * vms_per_vdi].curhost = src_host
 
         # update the next_states now
         for i in range(0, nVDIs):
