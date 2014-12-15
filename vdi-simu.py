@@ -40,6 +40,10 @@ class vm:
         self.state = state
         self.curhost = curhost
         self.origin = origin
+    def isOriginHost(self, vdi_index):
+        return self.origin == vdi_index
+    def isCurHost(self, vdi_index):
+        return self.curhost == vdi_index
 
 # current vm-vdi plan map
 # by default, vms are assigned according to their index, e.g., vdi_num = vm_index / vms_per_vdi
@@ -83,15 +87,18 @@ full_migrate = float(configs['full_migrate'])
 partial_migrate = float(configs['partial_migrate'])
 s3_suspend = float(configs['s3_suspend'])
 traces_file = configs['traces']
-dayofweek = configs['dayofweek'] # weekday or weekend
 interval_ahead = int(configs["interval_ahead"])
+partial_resume = float(configs['partial_resume'])
+s3_resume = float(configs['s3_resume'])
+
+idle_threshold = float(configs['idle_threshold'])
+resume_threshold = int(configs['resume_threshold'])
 migration_policy_type = configs["migration_policy_type"]
 slack = float(configs['slack'])
 tightness = float(configs['tightness'])
-resume_threshold = int(configs['resume_threshold'])
-partial_resume = float(configs['partial_resume'])
-s3_resume = float(configs['s3_resume'])
+dayofweek = configs['dayofweek'] # weekday or weekend
 # end of policy parameters
+
 
 def state_str(s):
     if s == FULL:
@@ -119,6 +126,14 @@ def check_state(cur_vdi_states, next_vdi_states):
         resume = True
     
     return (migrate, resume)
+
+
+# update the origins. Assuming all active VMs will be moved to the cur host
+def update_vms(vm_states):
+    for i in range(0, nVMs):
+        vms[i].state = vm_states[i]
+        if vm_states[i] >= 1 and vms[i].curhost != vms[i].origin: # remote host turned into origin host
+            vms[i].origin = vms[i].curhost
 
 # writing a line to the five-interval results
 def output_interval(of2, vm_states, vdi_states, cur_sec):
@@ -170,9 +185,9 @@ def output_interval(of2, vm_states, vdi_states, cur_sec):
     line += "%f,"%active_vdis
     of2.write(line)
 
-def run(i, outf):
+def run(inf, outf):
 
-    inf = open(i, "r")
+    inf = open(inf, "r")
     tmp = outf
     outf = tmp + "-by-second.csv"
     outf2 = tmp + "-by-interval.csv"
@@ -188,8 +203,6 @@ def run(i, outf):
     of2_header += "\n"    
     of2.write(of2_header)
 
-    # each line is one second of snapshot of NUM of desktops, 1 is active and 0 is idle
-    sec_past = 0
     # current VM states in a time interval
     vm_states = []
     for i in range(0, nVMs):
@@ -225,6 +238,14 @@ def run(i, outf):
 
         assert len(vm_states) == nVMs
 
+        # init vms array
+        if cur_sec == 0:
+            del vms[:]
+            for j in range(0, nVMs):
+                origin = j / vms_per_vdi
+                vms.append(vm(origin, origin, 0))
+
+        assert len(vms) == nVMs
         if cur_sec % interval == 0: # only re-init it to all 0 when reaching the end of the interval
             for j in range(0, nVMs):
                 vm_states[j] = 0
@@ -242,6 +263,9 @@ def run(i, outf):
             # vm_states[i] = 0
         
         if cur_sec % interval == 0 and cur_sec > 0:
+            # update global variable vms state and origin hosts
+            update_vms(vm_states)
+
             output_interval(of2, vm_states, vdi_states, cur_sec)
             # Reaching the end of the interval, time to make decision
             next_vdi_states = make_decision(vm_states, vdi_states, cur_sec, of2)
@@ -252,11 +276,8 @@ def run(i, outf):
                 migration_times += 1
             if resume:
                 resume_times += 1
-            # re-init the interval value to  0
-            sec_past = 1            
             vdi_states.append(next_vdi_states)
         else:
-            sec_past += 1            
             vdi_states.append(cur_vdi_states)
         cur_sec += 1
         total_vdi_activeness_arr.append(vdi_activeness)
@@ -371,46 +392,12 @@ def get_cdf(p, m, n):
 # decide whether a vdi server is migratable at the second
 def is_migratable(cur_sec, idle_vms, active_vms):
     
+    assert migration_policy_type == "static"
+
     if migration_policy_type == "static":
-        ratio = float(configs['idle_threshold'])        
-        nVMs = int(configs['nVMs'])
-        nVDIs = int(configs['nVDIs'])
-        vms_per_vdi = nVMs / nVDIs
         
-        threshold = int( (idle_vms + active_vms) * ratio )
-
-        return idle_vms > threshold
-    if migration_policy_type == "dynamic":
-        interval_ahead = int(configs["interval_ahead"])
-        active_vm_num_threshold = int(configs["active_vm_num_threshold"])
-        active_vm_cdf_threshold = float(configs["active_vm_cdf_threshold"])
-        
-        cur_active_vms = vms_per_vdi - idle_vms 
-        # FIXME: We do not account for current active at this moment
-        # cur_active_vms = 0
-        
-        # how many idle vms are allowed to become active 
-        idle_to_active_allowed = active_vm_num_threshold - cur_active_vms 
-        if idle_to_active_allowed <= 0:
-            return False        # a shortcut, current active vms are greater than our threshold. that vdi server is not migratable at all
-        p = get_idle_probability(cur_sec)
-        assert p >= 0 and p <= 1
-        if cur_sec > 12 * 60 * 60 and p_print_cnt > 0:
-            print "cur sec: %d" % cur_sec
-            print "p is %f" % p
-            p_print_cnt -= 1
-
-        cdf = get_cdf(p, idle_vms, idle_to_active_allowed)
-        assert cdf >= 0 and cdf <= 1
-        if cur_sec > 12 * 60 * 60 and  p_print_cnt > 0:
-            print "cur sec: %d" % cur_sec
-            print "cdf is %f" % cdf
-            p_print_cnt -= 1
-        
-        if cdf >= active_vm_cdf_threshold:
-            return True
-        else:
-            return False
+        threshold = int( (idle_vms + active_vms) * idle_threshold )
+        return idle_vms >= threshold
     else:
         raise Exception("Unknown policy type: %s" % migration_policy_type)
 
@@ -425,20 +412,20 @@ def get_resource_needed(index, vdi_idleness, vdi_activeness):
     return resource_needed
 
 # scanning the vm states in the vms array
-def get_resource_consumed(vdi_index, vm_states):
+def get_resource_consumed(vdi_index):
 
     rcsmd = 0
     for i,v in enumerate(vms):
         if v.curhost == vdi_index:
             rneeded = 1
-            if vm_states[i] == 0: # idle vm
+            if v.state == 0: # idle vm
                 rneeded = idle_vm_consumption
             rcsmd += rneeded
     return rcsmd
 
-def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_activeness,  vm_states, cur_sec, s3_flag):
+def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_activeness, cur_sec, s3_flag):
     global configs
-
+    global vms
     global vm_vdi_logs
     nVMs = int(configs['nVMs'])
     nVDIs = int(configs['nVDIs'])
@@ -448,24 +435,14 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
     slack = float(configs['slack'])
     tightness = float(configs['tightness'])
 
-    # init the vms array first,
-    # by default, the vms are assigned to vdis according to their index
-    if not s3_flag:
-        # delete all elements first if not empty
-        if len(vms) != 0:
-            del vms[:]
-        for i in range(0, nVMs):
-            origin = i / vms_per_vdi
-            vms.append(vm(origin, origin, -1))
-
     for i in to_migrate:
         # for each vm in this vdi to migrate
-        # for v in range(0, vms_per_vdi):
+        vms_copy = vms[:]
         for v in range(0, nVMs):
             if vms[v].curhost != i: # all the vms residing in this host
                 continue
             vm_index = v
-            vm_state = vm_states[vm_index]
+            vm_state = vms[vm_index].state
             rneeded = 1         # by default, active vm needs 100%
             if vm_state == 0:
                 rneeded = idle_vm_consumption
@@ -473,7 +450,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
             # look for a dest host to migrate
             for j in range(0, nVDIs):
                 if j not in to_migrate and vdi_states[-1][j] == FULL: # make sure the dest host is not a S3 host
-                    rconsumed = get_resource_consumed(j, vm_states)
+                    rconsumed = get_resource_consumed(j)
                     #print "rconsumed is %f" % rconsumed
                     if (rconsumed + rneeded) <= tightness*(1+slack)*vms_per_vdi:
                         dest = j
@@ -487,19 +464,21 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                     o += ","
                 print o
                 print "vm_index: %d" % vm_index
+                print "current host:", vms[i].curhost
+                print "vm state: ", vm_state
                 total_resource_needed = 0
                 total_resource_avail = 0
 
                 for j in range(0, nVDIs):
                     if j in to_migrate:
                         print "VDI# %d is in to_migrate"% j
-                        total_resource_needed += get_resource_consumed(j, vm_states)
+                        total_resource_needed += get_resource_consumed(j)
                         continue
                     if vdi_states[-1][j] != FULL:
                         print "VDI# %d is not FULL"% j
                         continue
                     if j not in to_migrate and vdi_states[-1][j] == FULL: # make sure the dest host is not a S3 host
-                        rconsumed = get_resource_consumed(j, vm_states)
+                        rconsumed = get_resource_consumed(j)
                         #print "rconsumed is %f" % rconsumed
                         print "rconsumed + rneeded = %.1f"%(rconsumed + rneeded)
                         print "tightness*(1+slack)*vms_per_vdi = %.1f"%(tightness*(1+slack)*vms_per_vdi)
@@ -508,13 +487,22 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                         else:
                             print "VDI# %d does not have enough resources"% j
                 assert False
+                # return False
             # update the map
-            vms[vm_index].curhost = dest
+            vms_copy[vm_index].curhost = dest
+            # We fully migrate the active VMs
+            if vm_state == 1:
+                vms_copy[vm_index].origin = dest
+
+    # delete update the vms 
+    del vms[:]
+    vms = vms_copy[:]
     # put the update in the logs
-    vm_vdi_logs[cur_sec]= vms.copy()
+    vm_vdi_logs[cur_sec]= vms[:]
 
     assert len(vms) > 0
     assert len(vm_vdi_logs) > 0
+    return True
     #print "The end of decide to migrate"
 # assume that migratable_servers is sorted in descending order of idleness
 def decide_what_to_migrate(migratable_servers, dest_host_num,  to_migrate, vdi_idleness, vdi_activeness, total_resource_available, s3_flag):
@@ -525,7 +513,7 @@ def decide_what_to_migrate(migratable_servers, dest_host_num,  to_migrate, vdi_i
 
     while len(migratable_servers) > 0 and (total_resource_available - total_resource_needed) <= (1 - tightness) * dest_host_num * vms_per_vdi:
         last_migratable_index = migratable_servers.pop()
-        # del migratable_servers[-1]
+
         resource = get_resource_needed(last_migratable_index, vdi_idleness, vdi_activeness)
         total_resource_needed -= resource
         total_resource_available += ((1+ slack) * vms_per_vdi - resource)
@@ -551,39 +539,28 @@ def debug_print(vdi_states, vdi_idleness, vdi_activeness, cur_sec):
         out += "%f"%rc
         print out
 
-
 # s3_flag means whether there are already consolidated host,
 # if true, then we use vms
-def decide_to_migrate(vm_states,vdi_states, cur_sec, s3_flag, of2):
+def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
 
     # get idleness
     vdi_idleness = {}
     vdi_activeness = {}
 
-    if not s3_flag:
-        for i in range(0, nVDIs):
-            idle_vms = 0 
-            for j in range(0, vms_per_vdi):
-                if vm_states[i*vms_per_vdi + j] == 0:
-                    idle_vms += 1
-            ratio = float(idle_vms) / float(vms_per_vdi) # 
-            vdi_idleness[i] = idle_vms
-            vdi_activeness[i] = vms_per_vdi - idle_vms
-    else:
-        for i in range(0, nVDIs): # init
-            vdi_idleness[i] = 0
-            vdi_activeness[i] = 0
-            
-        for i in range(0, nVMs):
-            vdi_index = vms[i].curhost
-            assert vdi_states[-1][vdi_index] == FULL
-            if vm_states[i] == 0:   # idle
-                vdi_idleness[vdi_index] += 1
-            if vm_states[i] >= 1:   # active
-                vdi_activeness[vdi_index] += 1
+    for i in range(0, nVDIs):
+        vdi_idleness[i] = 0
+        vdi_activeness[i] = 0
+
+    # get vdi idleness and activeness according to the curhost of the 
+    for v in vms:
+        vdi_index = v.curhost
+        assert vdi_index >= 0 and vdi_index < nVDIs
+        if v.state == 0:
+            vdi_idleness[vdi_index] += 1
+        else:
+            vdi_activeness[vdi_index] += 1
 
     # sort the vdi server from highest to lowest idle ratio (idle VM#)
-    # check if the probability is greater than the threshold
     migratable_servers = []
     total_resource_avail = 0    # total resource available for the un-migratable servers
     dest_host_num = 0
@@ -593,15 +570,8 @@ def decide_to_migrate(vm_states,vdi_states, cur_sec, s3_flag, of2):
 
         if s3_flag and vdi_states[-1][vdi_num] != FULL: # skip the already idle vdis
             continue
-
-        active_vms = vdi_activeness[vdi_num] 
-        total_active_vms += active_vms
-        # FIXME: we don't migrate destination hosts (i.e., the hosts that have hosts others' VMs before)
-        if is_migratable(cur_sec,idle_vms, active_vms) : 
-            migratable_servers.append(vdi_num)
         else:
-            total_resource_avail += ((slack+1) * vms_per_vdi - active_vms - idle_vms * idle_vm_consumption) 
-            dest_host_num += 1
+            migratable_servers.append(vdi_num)
 
     to_migrate = []
     # decide the migration plan using a strategy
@@ -616,23 +586,23 @@ def decide_to_migrate(vm_states,vdi_states, cur_sec, s3_flag, of2):
             o += "%d-"%m
         of2.write(o)
 
-        decide_detailed_migration_plan(to_migrate, vdi_states,  vdi_idleness, vdi_activeness, vm_states, cur_sec, s3_flag)
+        # there is a chance that we will never find a detailed plan to fit all the vms
+        # in that case, we simply don't migrate them
+        truly_migratable = False
+        truly_migratable = decide_detailed_migration_plan(to_migrate, vdi_states,  vdi_idleness, vdi_activeness, cur_sec, s3_flag)
         # copy the previous states first
         next_states = []
         c = 0
         for s in vdi_states[-1]:
             next_states.append(s)
             c += 1
-        # update the new stats
-        for i in to_migrate:
-            next_states[i] = MIGRATING
-        return (next_states, True)
-    else:
-        # debug: if total vm# < 5, then we print out the reasons why it does not migrate
-        # if total_active_vms < 5: 
-        # debug_print(vdi_states,vdi_idleness,vdi_activeness,cur_sec)
-        # assert False
 
+        # only update the new stats if it is truly migratable
+        if truly_migratable:
+            for i in to_migrate:
+                next_states[i] = MIGRATING
+        return (next_states, truly_migratable)
+    else:
         # return the previous setting
         return (vdi_states[-1], False)
 
@@ -641,8 +611,10 @@ def get_overall_state(vdi_states):
     for i in vdi_states[-1]:    # give priority to migrating or reintegrating
         if i == MIGRATING:
             state = "migrating"
+            break
         if i == REINTEGRATING:
             state = "reintegrating"
+            break
 
     if state != "full":
         return state
@@ -687,8 +659,6 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
 
     global configs
     assert len(vms) > 0
-    
-    # FIXME: if Resume, then resume all of the them. I didn't differentiate one or more vdis
 
     # see if the capacity is exceeded 
     vdi_consumption = []
@@ -723,12 +693,25 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
                     vdi_index = vms[i].curhost
                     if vdi_index == v and (i < v * vms_per_vdi or i >= (v+1) * vms_per_vdi):
                         src_host = i / vms_per_vdi
-                        # debug output, it should happen.
+                        # debug output, it should not happen.
                         if last_states[src_host] != S3:
+                            print "dest host is ", v
+                            print "vm# is", i
+                            print "vdi_index is", vdi_index
                             print "src_host is %d" % src_host                            
+                            print "src_host state is ", state_str(last_states[src_host])
+                            for j in range(0, nVDIs):
+                                print "vdi# %d state is %s" % (j, state_str(last_states[j]))
+                                # print "consumption: %f" % vdi_consumption[j]
+                                line ="hosting vms:"
+                                for k,vm in enumerate(vms):
+                                    if vm.curhost == j:
+                                        line += str(k)
+                                        line += ", "
+                                print line
                             assert False
                         # end of debug output
-                        last_states[src_host] = REINTEGRATING # bring the src host back to live
+                        last_states[src_host] = REINTEGRATING # bring the src host back to life
                         # update the cur map
                         for j in range(0, vms_per_vdi):
                             vms[j+src_host * vms_per_vdi].curhost = src_host
@@ -777,7 +760,7 @@ def get_reintegrating_vdi_stats(next_states, vm_states):
     return (nActives, nIdles)
                 
 def make_decision(vm_states,vdi_states, cur_sec, of2):
-    global configs    
+    global configs,vms
     global migration_interval,reintegration_interval
     global cumulative_interval,cumulative_interval2
     next_states = []
@@ -785,7 +768,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
     
     if overall_state == "full":
         # decide whether to migrate
-        (next_states, decision) = decide_to_migrate(vm_states,vdi_states, cur_sec, False, of2)
+        (next_states, decision) = decide_to_migrate(vdi_states, cur_sec, False, of2)
 
         if decision == True:
             (nActives, nIdles) = get_migrating_vdi_stats(next_states, vm_states)
@@ -815,7 +798,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
             cumulative_interval2 = 0
         else:
             # decide to whether to migrate again
-            (next_states, decision) = decide_to_migrate(vm_states,vdi_states, cur_sec, True, of2)
+            (next_states, decision) = decide_to_migrate(vdi_states, cur_sec, True, of2)
             if decision == True:
                 (nActives, nIdles) = get_migrating_vdi_stats(next_states, vm_states)
                 # how many intervals it takes to migrate all VMs
@@ -889,8 +872,13 @@ if __name__ == '__main__':
             configs['idle_threshold'] = float(its[i])
             configs['slack'] = float(sts[i])
             configs['tightness'] = float(tts[i])
-
-            configs["dayofweek"] = "weekday"            
+            configs["dayofweek"] = "weekday"
+            resume_threshold = int(rts[i])
+            idle_threshold = float(its[i])
+            slack = float(sts[i])
+            tightness = float(tts[i])
+            dayofweek = "weekday"
+            
             inputs = configs["inputs-weekday"]
             output_postfix = ".out-static-%.1f-%.1f-%.1f"%(float(its[i]), float(sts[i]), float(tts[i]))
             (ave_weekday_saving, ave_weekday_consolidated_secs, \
