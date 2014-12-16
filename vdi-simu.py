@@ -161,10 +161,10 @@ def output_interval(of2, vm_states, vdi_states, cur_sec):
         resource = 0
         activeness = 0 
         if has_s3:              # it is consolidated state, so scan all vms 
-            assert len(vms) > 0 
+            assert len(vms) == nVMs
             for j, v in enumerate(vms):
                 if v.curhost == i:
-                    if vm_states[j] >= 1:
+                    if v.state >= 1:
                         active_vm += 1
                         resource += 1
                     else:
@@ -172,7 +172,7 @@ def output_interval(of2, vm_states, vdi_states, cur_sec):
             activeness = float(active_vm) / nVMs
         else:
             for j in range(0, vms_per_vdi):
-                if vm_states[j + i*vms_per_vdi] >= 1:
+                if vms[j + i*vms_per_vdi].state >= 1:
                     active_vm += 1
                     resource += 1
                 else:
@@ -489,6 +489,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                 assert False
                 # return False
             # update the map
+            assert vms_copy[vm_index].curhost != dest
             vms_copy[vm_index].curhost = dest
             # We fully migrate the active VMs
             if vm_state == 1:
@@ -645,38 +646,145 @@ def record_vm_states(vm_states):
     for i in vm_states:
         vm_states_before_migration[c] = i
         c += 1
+def try_to_allocate(vdi_set, vms_copy, vdi_states):
+    allocatable = False
+    vdi_capacity = vms_per_vdi * ( 1 + slack )
 
-def resume_policy(vms_awake):
-    # FIXME: only implement a policy here: any vm awake  > 5 will lead to the whole cluster to resume
-    resume = False
-    for i in vms_awake:
-        if i > resume_threshold:
-            resume = True
-            break
-    return resume
-
-def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
-
-    global configs
-    assert len(vms) > 0
-
-    # see if the capacity is exceeded 
+    # if there is a newly woke-up vdi server, then resume all of its partial replica and see if the problem is solved
+    for i in vdi_set:
+        if vdi_states[-1][i] == S3:
+            for v in vms_copy:
+                if v.origin == i and v.state == 0:
+                    v.curhost = i
+    # get the vdi consumption of each vdi
     vdi_consumption = []
+    get_vdi_consumption(vdi_consumption, vms_copy, vdi_states)    
+
+    for i in vdi_set:
+        while vdi_consumption[i] > vdi_capacity:
+            # try to kick out the remote idle vms first
+            local_idle_vms = []
+            active_vms = []
+            for v in vms_copy:
+                if v.curhost == i and v.state == 0 and v.origin == i:
+                    local_idle_vms.append(v)
+                if v.curhost == i and v.state == 1:
+                    active_vms.append(v)
+                if v.curhost == i and v.state == 0 and v.curhost != v.origin:
+                    # find dest.
+                    for k in vdi_set:
+                        if i == k:
+                            continue
+                        else:
+                            # see if it fits
+                            if vdi_consumption[k] + idle_vm_consumption <= vdi_capacity:
+                                v.curhost = k
+                                vdi_consumption[k] += idle_vm_consumption
+                                vdi_consumption[i] -= idle_vm_consumption
+                                break
+                    else:
+                        # meaning we have not found k that hosts the v
+                        allocatable = False
+                        return allocatable
+                    # here means the loop has found k, then test whether there is still overloaded vdis
+                    if vdi_consumption[i] <= vdi_capacity:
+                        break
+
+            if vdi_consumption[i] > vdi_capacity:
+                # now to kick out the local idle vms
+                for v in local_idle_vms:
+                    # find dest.
+                    for k in vdi_set:
+                        if i == k:
+                            continue
+                        else:
+                            # see if it fits
+                            if vdi_consumption[k] + idle_vm_consumption <= vdi_capacity:
+                                v.curhost = k
+                                vdi_consumption[k] += idle_vm_consumption
+                                vdi_consumption[i] -= idle_vm_consumption
+                                break
+                    else:
+                        # meaning we have not found k that hosts the v
+                        allocatable = False
+                        return allocatable
+                    # here means the loop has found k, then test whether there is still overloaded vdis
+                    if vdi_consumption[i] <= vdi_capacity:
+                        break
+
+            if vdi_consumption[i] > vdi_capacity:
+                 # now to kick out the active vms
+                for v in active_vms:
+                    # find dest.
+                    for k in vdi_set:
+                        if i == k:
+                            continue
+                        else:
+                            # see if it fits
+                            if vdi_consumption[k] + 1 <= vdi_capacity:
+                                v.curhost = k
+                                vdi_consumption[k] += 1
+                                vdi_consumption[i] -= 1
+                                break
+                    else:
+                        # meaning we have not found k that hosts the v
+                        allocatable = False
+                        return allocatable
+                    # here means the loop has found k, then test whether there is still overloaded vdis
+                    if vdi_consumption[i] <= vdi_capacity:
+                        break
+                else:
+                    # this is unlikely because evacuating all active VMs and still not vdi_consumption
+                    assert False
+    else:                       
+        # loop exits normally, then
+        allocatable = True
+
+    return allocatable
+
+# get the vdi_consumption
+def get_vdi_consumption(vdi_consumption, vms_copy, vdi_states):
+    # see if the capacity is exceeded 
     for i in range(0, nVDIs):   # init 
         vdi_consumption.append(0)
     for i in range(0, nVMs):
-        vdi_index = vms[i].curhost
-        assert vdi_states[-1][vdi_index] != S3
-        if vm_states[i] == 0:   # idle
+        vdi_index = vms_copy[i].curhost
+        # assert vdi_states[-1][vdi_index] != S3
+        if vms_copy[i].state == 0:   # idle
             vdi_consumption[vdi_index] += idle_vm_consumption
-        if vm_states[i] >= 1:   # active
+        if vms_copy[i].state >= 1:   # active
             vdi_consumption[vdi_index] += 1
 
+def get_next_states(vdi_states):
+    global vms
+    last_states = vdi_states[-1]
+    for i in range(nVDIs):
+        if last_states[i] == S3:
+            for v in vms:
+                if v.curhost == i:
+                    last_states[i] = REINTEGRATING
+    return last_states
+
+def decide_to_resume(vdi_states, cur_sec, of2):
+
+    global configs, vms
+    assert len(vms) == nVMs
+
+    vdi_consumption = []
+    get_vdi_consumption(vdi_consumption, vms, vdi_states)
+    
     resume = False
     vdis_to_resume = {}
+
+    # total resource available, positive means the existing vdi can accommadate the vms,
+    # negative means we need to wake up at least one more vdis to migrate the vms
+    total_resource = 0 
     
     # scan the list and see if any vdi exceeds the capacity
     for i in range(0, nVDIs):
+        if vdi_states[-1][i] != S3: # only account the full power vdis
+            total_resource += (vms_per_vdi * (slack + 1) - vdi_consumption[i])
+
         if vdi_consumption[i] > vms_per_vdi * (slack + 1):
             resume = True
             vdis_to_resume[i] = True
@@ -685,40 +793,52 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
 
     next_states = []
     if resume:
-        # next_states = update_states(vdi_states, S3, REINTEGRATING)
+        assert len(vdis_to_resume) > 0
         last_states = vdi_states[-1]
-        for v in range(0, nVDIs):
-            if vdis_to_resume[v]:
-                for i in range(0, nVMs):
-                    vdi_index = vms[i].curhost
-                    if vdi_index == v and (i < v * vms_per_vdi or i >= (v+1) * vms_per_vdi):
-                        src_host = i / vms_per_vdi
-                        # debug output, it should not happen.
-                        if last_states[src_host] != S3:
-                            print "dest host is ", v
-                            print "vm# is", i
-                            print "vdi_index is", vdi_index
-                            print "src_host is %d" % src_host                            
-                            print "src_host state is ", state_str(last_states[src_host])
-                            for j in range(0, nVDIs):
-                                print "vdi# %d state is %s" % (j, state_str(last_states[j]))
-                                # print "consumption: %f" % vdi_consumption[j]
-                                line ="hosting vms:"
-                                for k,vm in enumerate(vms):
-                                    if vm.curhost == j:
-                                        line += str(k)
-                                        line += ", "
-                                print line
-                            assert False
-                        # end of debug output
-                        last_states[src_host] = REINTEGRATING # bring the src host back to life
-                        # update the cur map
-                        for j in range(0, vms_per_vdi):
-                            vms[j+src_host * vms_per_vdi].curhost = src_host
+        wake_vdis = False
+        if total_resource >= 0:
+            # try to allocate 
+            allocatable = False
+            vms_copy = vms[:]
+            allocatable = try_to_allocate(vdis_to_resume, vms_copy, vdi_states)
+            if allocatable:
+                del vms[:]
+                vms = vms_copy[:]
+                next_states = get_next_states(vdi_states)
+            else:
+                wake_vdis = True
+        else:
+            wake_vdis = True
+            
+        if wake_vdis:
+            # wake up new vdi servers
+            # sort the sleeping vdi, pick the one with the most remote partial vms
+            sleeping_vdis = {}
+            for i in range(nVDIs):
+                if last_states[i] == S3:
+                    sleeping_vdis[i] = -1
+            for v in vms:
+                if v.origin != v.curhost and last_states[v.origin] == S3:
+                    sleeping_vdis[v.origin] += 1
+            # try to wake up one by one
+            vdi_set = []
+            for v, value in vdis_to_resume.items():
+                if value:
+                    vdi_set.append(v)
 
-        # update the next_states now
-        for i in range(0, nVDIs):
-            next_states.append(last_states[i])
+            found_solution = False
+            for vdi_index, v in sorted(sleeping_vdis.items(), key=lambda x: x[1], reverse=True):
+                allocatable = False
+                vdi_set.append(vdi_index)
+                vms_copy = vms[:]
+                allocatable = try_to_allocate(vdi_set, vms_copy, vdi_states)
+                if allocatable:
+                    del vms[:]
+                    vms = vms_copy[:]
+                    next_states = get_next_states(vdi_states)
+                    found_solution = True
+                    break
+            assert found_solution
     else:
         for i in range(0, nVDIs):
             next_states.append(vdi_states[-1][i])
@@ -726,7 +846,7 @@ def decide_to_resume(vm_states, vdi_states, cur_sec, of2):
     return (next_states, resume)
 
 # return how many idle and active vms will be migrated
-def get_migrating_vdi_stats(next_states, vm_states):
+def get_migrating_vdi_stats(next_states):
 
     nActives = 0
     nIdles = 0
@@ -736,13 +856,13 @@ def get_migrating_vdi_stats(next_states, vm_states):
     for i in range(0, nVDIs):
         if next_states[i] == MIGRATING:
             for j in range(0, vms_per_vdi):
-                if vm_states[i*vms_per_vdi + j] == 0:
+                if vms[i*vms_per_vdi + j].state == 0:
                     nIdles += 1
                 else:
                     nActives += 1
 
     return (nActives, nIdles)
-def get_reintegrating_vdi_stats(next_states, vm_states):
+def get_reintegrating_vdi_stats(next_states):
 
     nActives = 0
     nIdles = 0
@@ -752,7 +872,7 @@ def get_reintegrating_vdi_stats(next_states, vm_states):
     for i in range(0, nVDIs):
         if next_states[i] == REINTEGRATING:
             for j in range(0, vms_per_vdi):
-                if vm_states[i*vms_per_vdi + j] == 0:
+                if vms[i*vms_per_vdi + j].state== 0:
                     nIdles += 1
                 else:
                     nActives += 1
@@ -771,7 +891,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
         (next_states, decision) = decide_to_migrate(vdi_states, cur_sec, False, of2)
 
         if decision == True:
-            (nActives, nIdles) = get_migrating_vdi_stats(next_states, vm_states)
+            (nActives, nIdles) = get_migrating_vdi_stats(next_states)
             # how many intervals it takes to migrate all VMs
             migration_interval = get_migration_interval(nActives, nIdles)
             assert migration_interval > 0
@@ -791,16 +911,16 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
             # change the state is migrated, put correspoinding vdi server into low power mode
             next_states = update_states(vdi_states, MIGRATING, S3)
     if overall_state == "migrated":
-        (next_states, resume) = decide_to_resume(vm_states, vdi_states, cur_sec, of2)
+        (next_states, resume) = decide_to_resume(vdi_states, cur_sec, of2)
         if resume == True:
-            (nActives, nIdles) = get_reintegrating_vdi_stats(next_states, vm_states)
+            (nActives, nIdles) = get_reintegrating_vdi_stats(next_states)
             reintegration_interval = get_reintegration_interval(nActives, nIdles)
             cumulative_interval2 = 0
         else:
             # decide to whether to migrate again
             (next_states, decision) = decide_to_migrate(vdi_states, cur_sec, True, of2)
             if decision == True:
-                (nActives, nIdles) = get_migrating_vdi_stats(next_states, vm_states)
+                (nActives, nIdles) = get_migrating_vdi_stats(next_states)
                 # how many intervals it takes to migrate all VMs
                 migration_interval = get_migration_interval(nActives, nIdles)
                 assert migration_interval > 0
@@ -885,7 +1005,7 @@ if __name__ == '__main__':
              ave_weekday_active_vm_on_consolidated_secs,ave_weekday_active_vm_secs,\
              ave_weekday_migration_times, ave_weekday_resume_times) = run_experiment(inputs, output_postfix)
             oline = "%.1f,%d,"%(configs['idle_threshold'],configs['resume_threshold'])
-            oline += "idle_threshold=%.1f tightness=%.1f,"%(configs['idle_threshold'],configs['tightness'])
+            oline += "tightness=%.1f,"%(configs['tightness'])
 
             oline += "%f, %d, %d, %d, %d, %d\n"% (ave_weekday_saving, ave_weekday_consolidated_secs/3600, ave_weekday_active_vm_on_consolidated_secs/3600,ave_weekday_active_vm_secs/3600,ave_weekday_migration_times,ave_weekday_resume_times)
             f.write(oline)
