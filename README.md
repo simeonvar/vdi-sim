@@ -1,9 +1,23 @@
 vdi-sim
 =======
 
-A simple cluster-wide VDI server simulator that supports different policies of combining full and partial VM migrations to simulate power consumption and performance impacts. 
+Vdi-sim is a simple cluster-wide Virtual Destktop Infrastructure(VDI) server simulator that supports different policies of combining full and partial VM migration techniques to simulate power consumption and performance impacts. The simulator assumes there exists a centralized controller software that coordinates the power management of a VDI server cluster. 
 
-The policies are in 4 parts:
+Vdi-sim takes VM activity traces as input. Each VDI server hosts a number of desktop virtual machines(VM). At each second, we measure the state of each VM. There are two defined VM states: idle and active. If there is no keyboard or mouse activity in a VM during a second, then the VM is defined to be idle, otherwise active. So a traces file for 8 VMs looks like below(Each line specifies the VM states during a particular second of the date):
+
+1,0,1,0,0,0,0,0
+1,0,1,0,1,0,0,1
+....
+
+Vdi-sim reads the traces file and makes decisions of whether or how to consolidate the vDI servers so as to save power. A very naive approach is to fully migrate all VMs when there are enough resources in the destination host(s) and power off a VDI server. There are a few questions to be answered: 
+
+Q1. Is it worthwhile to migrate? If more VMs are to be waken up and to turn into acitve, then the destination host(s) do not have cacpacity to host them any more. In this case, we may have to power on the original host and migrate them back again? If we know the VMs become active soon, can we make smarter decisions so that we save network bandwidth and migration downtime? Vdi-sim enables different policies, e.g., aggressive ones such as migrate VMs whenever possible, or mild policies such as only migrate whenever there is enough room of resource in the destination host to allow the resource consumption to grow. 
+
+Q2. How do we migrate VMs? Full migration is expensive in terms of migration downtime(40+ seconds), network bandwidth (e.g., transfering 4GB RAM per VM) and the destination host RAW or disk space. Partial migration is swift, but it will cause severe performance degradation for active VMs. In vdi-sim, the default choice is to partially migrate idle VMs and fully migrate active VMs. 
+
+Q3. Where to migrate? The question is concerned with the VM placement strategy. The default strategy in vdi-sim is to attempt to assemble active VMs into host. If the host does not have enough capacities to host all VMs, the priority to vacuate based on the VM state is: remote partial idle VMs > local idle VMs > active VMs. 
+
+More specifically, the policies are in 4 parts:
 
 A. Whether to migrate, the decision is made only if
    1. when there is enough capacites in the destination host(s)

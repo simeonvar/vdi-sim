@@ -30,38 +30,40 @@ reintegration_interval = 0
 cumulative_interval2 = 0
 
 
-# vm object, that stores vm state, the original and current host. 
+# vm object, that stores vm state, the original and current host.
 # If origin != curhost, it indicates that it is a remote vms. Ir
+
 class vm:
-    origin = -1
-    curhost = -1
-    state = -1
     def __init__(self, origin, curhost, state):
         self.state = state
         self.curhost = curhost
         self.origin = origin
+
+    origin = -1
+    curhost = -1
+    state = -1
     def isOriginHost(self, vdi_index):
         return self.origin == vdi_index
+
     def isCurHost(self, vdi_index):
         return self.curhost == vdi_index
-
 # current vm-vdi plan map
 # by default, vms are assigned according to their index, e.g., vdi_num = vm_index / vms_per_vdi
 # after migration, some vms will be assigned to another vdi server, so their vdi num will change
 
-# global vm array that stores the vm information
 vms = []
+# global vm array that stores the vm information
 
-# record the vm-vdi map changes
 vm_vdi_logs = {}
+# record the vm-vdi map changes
 
 configs = {}
 parser = ConfigParser.ConfigParser()
 parser.optionxform=str
 parser.read(SETTING)
 
-# debug print counts
 print_cnt = 0
+# debug print counts
 p_print_cnt = 0
 
 for section in parser.sections():
@@ -73,13 +75,14 @@ for section in parser.sections():
         configs[option] = value
         # print "Parser >>> ... ", option,value,type(value)
 
+
 # policy parameters
 nVMs = int(configs['nVMs'])
 nVDIs = int(configs['nVDIs'])
 vms_per_vdi = nVMs / nVDIs
 idle_vm_consumption = float(configs['idle_vm_consumption'])
 interval = int(configs['interval'])
-full_power = float(configs['full_power']) 
+full_power = float(configs['full_power'])
 low_power =  float(configs['low_power'])
 method = configs['method']
 interval = int(configs['interval'])
