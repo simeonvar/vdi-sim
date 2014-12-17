@@ -219,7 +219,7 @@ def run(inf, outf):
     vm_active_vdi_migrated_secs = 0
     migration_times = 0
     resume_times = 0
-
+    total_full_migration_times = 0
     for line in inf:
         line = line.rstrip()
 
@@ -268,14 +268,14 @@ def run(inf, outf):
 
             output_interval(of2, vm_states, vdi_states, cur_sec)
             # Reaching the end of the interval, time to make decision
-            next_vdi_states = make_decision(vm_states, vdi_states, cur_sec, of2)
+            (next_vdi_states, partial_migration_times, full_migration_times, partial_resume_times) = make_decision(vm_states, vdi_states, cur_sec, of2)
             (migrate, resume) = check_state(cur_vdi_states, next_vdi_states)
             
             of2.write("\n")
-            if migrate:
-                migration_times += 1
-            if resume:
-                resume_times += 1
+            migration_times += partial_migration_times
+            resume_times += partial_resume_times
+            total_full_migration_times += full_migration_times
+
             vdi_states.append(next_vdi_states)
         else:
             vdi_states.append(cur_vdi_states)
@@ -334,7 +334,7 @@ def run(inf, outf):
     print "Done. Result is stored in %s" % outf
     # print "Total active seconds: %d" % a1
 
-    return (power_saving, total_low_power_time, vm_active_vdi_migrated_secs, active_secs, migration_times, resume_times)
+    return (power_saving, total_low_power_time, vm_active_vdi_migrated_secs, active_secs, migration_times, resume_times, total_full_migration_times)
 
 def get_migration_interval(nActive, nIdles):
 
@@ -431,6 +431,9 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
     nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
 
+    partial_migrate_times = 0
+    full_migrate_times = 0
+
     idle_vm_consumption = float(configs['idle_vm_consumption'])
     slack = float(configs['slack'])
     tightness = float(configs['tightness'])
@@ -492,8 +495,11 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
             assert vms_copy[vm_index].curhost != dest
             vms_copy[vm_index].curhost = dest
             # We fully migrate the active VMs
-            if vm_state == 1:
+            if vm_state >= 1:
                 vms_copy[vm_index].origin = dest
+                full_migrate_times += 1
+            else:
+                partial_migrate_times += 1
 
     # delete update the vms 
     del vms[:]
@@ -503,7 +509,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
 
     assert len(vms) > 0
     assert len(vm_vdi_logs) > 0
-    return True
+    return (True, partial_migrate_times, full_migrate_times)
     #print "The end of decide to migrate"
 # assume that migratable_servers is sorted in descending order of idleness
 def decide_what_to_migrate(migratable_servers, dest_host_num,  to_migrate, vdi_idleness, vdi_activeness, total_resource_available, s3_flag):
@@ -548,6 +554,9 @@ def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
     vdi_idleness = {}
     vdi_activeness = {}
 
+    partial_migrate_times = 0
+    full_migrate_times = 0
+
     for i in range(0, nVDIs):
         vdi_idleness[i] = 0
         vdi_activeness[i] = 0
@@ -590,7 +599,7 @@ def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
         # there is a chance that we will never find a detailed plan to fit all the vms
         # in that case, we simply don't migrate them
         truly_migratable = False
-        truly_migratable = decide_detailed_migration_plan(to_migrate, vdi_states,  vdi_idleness, vdi_activeness, cur_sec, s3_flag)
+        (truly_migratable, partial_migrate_times, full_migrate_times) = decide_detailed_migration_plan(to_migrate, vdi_states,  vdi_idleness, vdi_activeness, cur_sec, s3_flag)
         # copy the previous states first
         next_states = []
         c = 0
@@ -602,10 +611,10 @@ def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
         if truly_migratable:
             for i in to_migrate:
                 next_states[i] = MIGRATING
-        return (next_states, truly_migratable)
+        return (next_states, truly_migratable,partial_migrate_times, full_migrate_times)
     else:
         # return the previous setting
-        return (vdi_states[-1], False)
+        return (vdi_states[-1], False, partial_migrate_times, full_migrate_times)
 
 def get_overall_state(vdi_states):
     state = "full"
@@ -765,10 +774,29 @@ def get_next_states(vdi_states):
                     last_states[i] = REINTEGRATING
     return last_states
 
+def account_migration_times(vms_copy):
+    partial_migrate_times = 0
+    partial_resume_times = 0
+    full_migrate_times = 0
+    for i in range(nVMs):
+        if vms[i].curhost != vms_copy[i].curhost:
+            if vms[i] >= 1:
+                full_migrate_times += 1
+            else:
+                if vms_copy[i].curhost == vms_copy[i].origin:
+                    partial_resume_times += 1
+                else:
+                    partial_migrate_times += 1
+    return (partial_migrate_times, full_migrate_times, partial_resume_times)
+
 def decide_to_resume(vdi_states, cur_sec, of2):
 
     global configs, vms
     assert len(vms) == nVMs
+
+    partial_migrate_times = 0
+    partial_resume_times = 0
+    full_migrate_times = 0
 
     vdi_consumption = []
     get_vdi_consumption(vdi_consumption, vms, vdi_states)
@@ -799,9 +827,13 @@ def decide_to_resume(vdi_states, cur_sec, of2):
         if total_resource >= 0:
             # try to allocate 
             allocatable = False
-            vms_copy = vms[:]
+            vms_copy = []
+            # copy the whole thing to a copy
+            for v in vms:
+                vms_copy.append(vm(v.origin,v.curhost,v.state))
             allocatable = try_to_allocate(vdis_to_resume, vms_copy, vdi_states)
             if allocatable:
+                (partial_migrate_times, full_migrate_times, partial_resume_times) = account_migration_times(vms_copy)
                 del vms[:]
                 vms = vms_copy[:]
                 next_states = get_next_states(vdi_states)
@@ -830,9 +862,14 @@ def decide_to_resume(vdi_states, cur_sec, of2):
             for vdi_index, v in sorted(sleeping_vdis.items(), key=lambda x: x[1], reverse=True):
                 allocatable = False
                 vdi_set.append(vdi_index)
-                vms_copy = vms[:]
+                vms_copy = []
+                # copy the whole thing to a copy
+                for v in vms:
+                    vms_copy.append(vm(v.origin,v.curhost,v.state))
                 allocatable = try_to_allocate(vdi_set, vms_copy, vdi_states)
                 if allocatable:
+                    (partial_migrate_times, full_migrate_times, partial_resume_times) = account_migration_times(vms_copy)
+                    assert partial_resume_times != 0
                     del vms[:]
                     vms = vms_copy[:]
                     next_states = get_next_states(vdi_states)
@@ -843,7 +880,7 @@ def decide_to_resume(vdi_states, cur_sec, of2):
         for i in range(0, nVDIs):
             next_states.append(vdi_states[-1][i])
 
-    return (next_states, resume)
+    return (next_states, resume, partial_migrate_times, full_migrate_times, partial_resume_times)
 
 # return how many idle and active vms will be migrated
 def get_migrating_vdi_stats(next_states):
@@ -885,10 +922,14 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
     global cumulative_interval,cumulative_interval2
     next_states = []
     overall_state = get_overall_state(vdi_states)
-    
+
+    partial_migration_times = 0
+    full_migration_times = 0
+    partial_resume_times = 0
+
     if overall_state == "full":
         # decide whether to migrate
-        (next_states, decision) = decide_to_migrate(vdi_states, cur_sec, False, of2)
+        (next_states, decision, partial_migration_times, full_migration_times) = decide_to_migrate(vdi_states, cur_sec, False, of2)
 
         if decision == True:
             (nActives, nIdles) = get_migrating_vdi_stats(next_states)
@@ -911,14 +952,14 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
             # change the state is migrated, put correspoinding vdi server into low power mode
             next_states = update_states(vdi_states, MIGRATING, S3)
     if overall_state == "migrated":
-        (next_states, resume) = decide_to_resume(vdi_states, cur_sec, of2)
+        (next_states, resume, partial_migration_times, full_migration_times, partial_resume_times) = decide_to_resume(vdi_states, cur_sec, of2)
         if resume == True:
             (nActives, nIdles) = get_reintegrating_vdi_stats(next_states)
             reintegration_interval = get_reintegration_interval(nActives, nIdles)
             cumulative_interval2 = 0
         else:
             # decide to whether to migrate again
-            (next_states, decision) = decide_to_migrate(vdi_states, cur_sec, True, of2)
+            (next_states, decision, partial_migration_times, full_migration_times) = decide_to_migrate(vdi_states, cur_sec, True, of2)
             if decision == True:
                 (nActives, nIdles) = get_migrating_vdi_stats(next_states)
                 # how many intervals it takes to migrate all VMs
@@ -937,7 +978,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
             cumulative_interval2 = 0
             next_states = update_states(vdi_states, REINTEGRATING, FULL)
 
-    return next_states
+    return (next_states, partial_migration_times, full_migration_times, partial_resume_times)
 
 
 def run_experiment(inputs, output_str):
@@ -947,11 +988,12 @@ def run_experiment(inputs, output_str):
     tacsecs = 0
     tasecs = 0
     tmt = 0
-    trt = 0 
+    trt = 0
+    fmt = 0
     for inf in inputs.rstrip().split(","):
         if inf != '':
             outf = inf+output_str
-            (saving, csecs, tactive_con_secs, tactive_secs, migration_times, resume_times)  = run(inf,outf)
+            (saving, csecs, tactive_con_secs, tactive_secs, migration_times, resume_times, full_migrate_times)  = run(inf,outf)
             tsaving += saving
             tcsecs += csecs
             tacsecs += tactive_con_secs
@@ -959,15 +1001,17 @@ def run_experiment(inputs, output_str):
             tmt += migration_times
             trt += resume_times
             cnt += 1
+            fmt += full_migrate_times
     ave_saving = tsaving / cnt 
     ave_consolidated_secs = tcsecs / cnt
     ave_active_vm_on_consolidated_secs = tacsecs / cnt
     ave_active_vm_secs = tasecs / cnt
     ave_migration_times = tmt / cnt
     ave_resume_times = trt /cnt
+    ave_full_migration_times = fmt/cnt
     return (ave_saving, ave_consolidated_secs,\
             ave_active_vm_on_consolidated_secs, ave_active_vm_secs,\
-            ave_migration_times, ave_resume_times)
+            ave_migration_times, ave_resume_times, ave_full_migration_times)
 
 
 if __name__ == '__main__':
@@ -979,8 +1023,8 @@ if __name__ == '__main__':
         of = "data/static-all-result.csv"
         f = open(of, "w+")
         header =  "Idle threshold, Resume threshold(aVM#), Policy,"
-        header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd), Migration#, Resume#,"
-        header += "Power Saving(we), Consol.Time(we), Active Consol. VMs Time(we), Ttl.Active.Time(we), Migration#, Resume#,\n"
+        header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd), Migration#, Resume#, Full Migration#"
+        header += "Power Saving(we), Consol.Time(we), Active Consol. VMs Time(we), Ttl.Active.Time(we), Migration#, Resume#, Full Migration#\n"
         f.write(header)
         rts = configs['resume_thresholds'].rstrip().split(",")
         its = configs['idle_thresholds'].rstrip().split(",")
@@ -1003,11 +1047,11 @@ if __name__ == '__main__':
             output_postfix = ".out-static-%.1f-%.1f-%.1f"%(float(its[i]), float(sts[i]), float(tts[i]))
             (ave_weekday_saving, ave_weekday_consolidated_secs, \
              ave_weekday_active_vm_on_consolidated_secs,ave_weekday_active_vm_secs,\
-             ave_weekday_migration_times, ave_weekday_resume_times) = run_experiment(inputs, output_postfix)
+             ave_weekday_migration_times, ave_weekday_resume_times, ave_full_migration_times) = run_experiment(inputs, output_postfix)
             oline = "%.1f,%d,"%(configs['idle_threshold'],configs['resume_threshold'])
             oline += "tightness=%.1f,"%(configs['tightness'])
 
-            oline += "%f, %d, %d, %d, %d, %d\n"% (ave_weekday_saving, ave_weekday_consolidated_secs/3600, ave_weekday_active_vm_on_consolidated_secs/3600,ave_weekday_active_vm_secs/3600,ave_weekday_migration_times,ave_weekday_resume_times)
+            oline += "%f, %d, %d, %d, %d, %d, %d\n"% (ave_weekday_saving, ave_weekday_consolidated_secs/3600, ave_weekday_active_vm_on_consolidated_secs/3600,ave_weekday_active_vm_secs/3600,ave_weekday_migration_times,ave_weekday_resume_times, ave_full_migration_times)
             f.write(oline)
             
         f.close()
