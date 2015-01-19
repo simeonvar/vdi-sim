@@ -189,7 +189,7 @@ def run(inf, outf):
     of2_header = "Time,Current Second,"
     for i in range(0, nVDIs):
         of2_header += "VDI%d-State,VDI%d-Activeness,VDI%d-Resource-Consumed,"%(i+1,i+1,i+1)
-    of2_header += "VDI# in Full Power, Partial Migration#, Full Migration#, Partial Reintegration#, Post-partial Migration#"
+    of2_header += "VDI# in Full Power %.1f, Partial Migration#, Full Migration#, Partial Reintegration#, Post-partial Migration#"%(1-tightness)
     of2_header += "\n"    
     of2.write(of2_header)
 
@@ -237,9 +237,8 @@ def run(inf, outf):
                 vms.append(vm(origin, origin, 0))
 
         assert len(vms) == nVMs
-        if cur_sec % interval == 0: # only re-init it to all 0 when reaching the end of the interval
-            for j in range(0, nVMs):
-                vm_states[j] = 0
+        # if cur_sec % interval == 0: # only re-init it to all 0 when reaching the end of the interval
+
         # evaluate the current situation
         for i in range(0, nVMs):
             a = int(activities[i].lstrip())
@@ -269,6 +268,10 @@ def run(inf, outf):
             total_full_migration_times += full_migration_times
 
             vdi_states.append(next_vdi_states)
+
+            # re-init the vm_states to 0
+            for j in range(0, nVMs):
+                vm_states[j] = 0
         else:
             vdi_states.append(cur_vdi_states)
         cur_sec += 1
@@ -481,8 +484,8 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                             print "found dest: %d" % j
                         else:
                             print "VDI# %d does not have enough resources"% j
-                assert False
-                # return False
+                # assert False
+                return (False,0,0)
             # update the map
             assert vms_copy[vm_index].curhost != dest
             vms_copy[vm_index].curhost = dest
