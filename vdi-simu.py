@@ -1,8 +1,10 @@
+
 #!/usr/bin/env python
 
 import ConfigParser
 import math
 import linecache
+import sys
 # a simple simulator program 
 
 SETTING = "./setting.conf"
@@ -29,6 +31,7 @@ vm_states_before_migration = []
 reintegration_interval = 0
 cumulative_interval2 = 0
 
+debug = True
 
 # vm object, that stores vm state, the original and current host. 
 # If origin != curhost, it indicates that it is a remote vms. Ir
@@ -99,6 +102,13 @@ tightness = float(configs['tightness'])
 dayofweek = configs['dayofweek'] # weekday or weekend
 # end of policy parameters
 
+def assert_vms(flag, vms2):
+    if flag:
+        # assert all vms are equal
+        for v in vms2:
+            if v.origin != v.curhost:
+                print "something wrong vms"
+                assert False
 
 def state_str(s):
     if s == FULL:
@@ -127,6 +137,14 @@ def check_state(cur_vdi_states, next_vdi_states):
     
     return (migrate, resume)
 
+def check_vms():
+    idle_turn_into_active = 0
+    for i in range(0, nVMs):
+        if vms[i].curhost != vms[i].origin: # remote host turned into origin host
+            print "Partial vm %d. curhost: %d, origin: %d"%(i, vms[i].curhost, vms[i].origin) 
+            idle_turn_into_active += 1
+
+    return idle_turn_into_active
 
 # update the origins. Assuming all active VMs will be moved to the cur host
 def update_vms(vm_states):
@@ -254,12 +272,13 @@ def run(inf, outf):
         
         if cur_sec % interval == 0 and cur_sec > 0:
             # update global variable vms state and origin hosts
-            itoactive = update_vms(vm_states)
+            itoactive = update_vms(vm_states)                
             remote_partial_vm_into_active += itoactive
 
             output_interval(of2, vm_states, vdi_states, cur_sec)
             # Reaching the end of the interval, time to make decision
             (next_vdi_states, partial_migration_times, full_migration_times, partial_resume_times) = make_decision(vm_states, vdi_states, cur_sec, of2)
+
             (migrate, resume) = check_state(cur_vdi_states, next_vdi_states)
             of2.write("%d,%d,%d,%d"%(partial_migration_times,full_migration_times,partial_resume_times,itoactive))
             of2.write("\n")
@@ -272,6 +291,10 @@ def run(inf, outf):
             # re-init the vm_states to 0
             for j in range(0, nVMs):
                 vm_states[j] = 0
+
+            if check_vms() > 0:
+                print "cur_sec: %d. exiting" % cur_sec
+                sys.exit(1)
         else:
             vdi_states.append(cur_vdi_states)
         cur_sec += 1
@@ -490,7 +513,8 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
             assert vms_copy[vm_index].curhost != dest
             vms_copy[vm_index].curhost = dest
             # We fully migrate the active VMs
-            if vm_state >= 1:
+            # if vm_state >= 1:
+            if True:
                 vms_copy[vm_index].origin = dest
                 full_migrate_times += 1
             else:
@@ -504,6 +528,12 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
 
     assert len(vms) > 0
     assert len(vm_vdi_logs) > 0
+    
+    if partial_migrate_times > 0:
+        print "cur_sec: "
+        print "partial_migrate_times should not be zero"
+        assert False
+
     return (True, partial_migrate_times, full_migrate_times)
     #print "The end of decide to migrate"
 # assume that migratable_servers is sorted in descending order of idleness
@@ -660,10 +690,12 @@ def try_to_allocate(vdi_set, vms_copy, vdi_states):
             for v in vms_copy:
                 if v.origin == i and v.state == 0:
                     v.curhost = i
+    assert_vms(debug, vms_copy)
     # get the vdi consumption of each vdi
     vdi_consumption = []
     get_vdi_consumption(vdi_consumption, vms_copy, vdi_states)    
 
+    assert_vms(debug, vms_copy)
     for i in vdi_set:
         while vdi_consumption[i] > vdi_capacity:
             # try to kick out the remote idle vms first
@@ -705,6 +737,7 @@ def try_to_allocate(vdi_set, vms_copy, vdi_states):
                             # see if it fits
                             if vdi_consumption[k] + idle_vm_consumption <= vdi_capacity:
                                 v.curhost = k
+                                v.origin = k
                                 vdi_consumption[k] += idle_vm_consumption
                                 vdi_consumption[i] -= idle_vm_consumption
                                 break
@@ -727,6 +760,7 @@ def try_to_allocate(vdi_set, vms_copy, vdi_states):
                             # see if it fits
                             if vdi_consumption[k] + 1 <= vdi_capacity:
                                 v.curhost = k
+                                v.origin = k
                                 vdi_consumption[k] += 1
                                 vdi_consumption[i] -= 1
                                 break
@@ -774,14 +808,17 @@ def account_migration_times(vms_copy):
     partial_resume_times = 0
     full_migrate_times = 0
     for i in range(nVMs):
-        if vms[i].curhost != vms_copy[i].curhost:
-            if vms[i].state >= 1:
+        if vms[i].curhost != vms_copy[i].curhost:            
+            # if vms[i].state >= 1:
+            if True:
                 full_migrate_times += 1
             else:
                 if vms_copy[i].curhost == vms_copy[i].origin:
                     partial_resume_times += 1
                 else:
                     partial_migrate_times += 1
+    assert partial_migrate_times == 0
+    assert partial_resume_times == 0
     return (partial_migrate_times, full_migrate_times, partial_resume_times)
 
 def decide_to_resume(vdi_states, cur_sec, of2):
@@ -831,8 +868,10 @@ def decide_to_resume(vdi_states, cur_sec, of2):
             for v in vms:
                 vms_copy.append(vm(v.origin,v.curhost,v.state))
             allocatable = try_to_allocate(vdi_set, vms_copy, vdi_states)
+            assert_vms(debug, vms_copy)
             if allocatable:
                 (partial_migrate_times, full_migrate_times, partial_resume_times) = account_migration_times(vms_copy)
+                # debug
                 del vms[:]
                 vms = vms_copy[:]
                 next_states = get_next_states(vdi_states)
@@ -862,6 +901,8 @@ def decide_to_resume(vdi_states, cur_sec, of2):
                 for v in vms:
                     vms_copy.append(vm(v.origin,v.curhost,v.state))
                 allocatable = try_to_allocate(vdi_set, vms_copy, vdi_states)
+                assert_vms(debug, vms_copy)
+
                 if allocatable:
                     (partial_migrate_times, full_migrate_times, partial_resume_times) = account_migration_times(vms_copy)
                     if partial_resume_times == 0:
@@ -870,6 +911,7 @@ def decide_to_resume(vdi_states, cur_sec, of2):
                         # assert False
                     del vms[:]
                     vms = vms_copy[:]
+                    assert_vms(debug, vms)
                     next_states = get_next_states(vdi_states)
                     found_solution = True
                     break
@@ -929,6 +971,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
         # decide whether to migrate
         (next_states, decision, partial_migration_times, full_migration_times) = decide_to_migrate(vdi_states, cur_sec, False, of2)
 
+        assert partial_migration_times == 0
         if decision == True:
             (nActives, nIdles) = get_migrating_vdi_stats(next_states)
             # how many intervals it takes to migrate all VMs
@@ -951,6 +994,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2):
             next_states = update_states(vdi_states, MIGRATING, S3)
     if overall_state == "migrated":
         (next_states, resume, partial_migration_times, full_migration_times, partial_resume_times) = decide_to_resume(vdi_states, cur_sec, of2)
+        assert partial_migration_times ==0 
         if resume == True:
             (nActives, nIdles) = get_reintegrating_vdi_stats(next_states)
             reintegration_interval = get_reintegration_interval(nActives, nIdles)
