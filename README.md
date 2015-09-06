@@ -1,9 +1,22 @@
 vdi-sim
 =======
 -How to run simulator
-After we edit the ./setting files, simply hit:
+A: After we edit the ./setting files, simply hit:
       python vdi-sim.py'
 It will take a while to finish.
+
+-Where is the output file? 
+A: The output file will be in the same directory of inputs-weekday. The output file name will be the trace file appended with the idle threshold value. 
+
+FAQ
+1. What was the resume threshold for? 
+A: It is the number of active VMs in the consolidated host. If it exceeds this threshold, then we need to kick someone out. We discard this notion in our refactoring. We don't need this threshold to complicate our policy. We simly let space be our single base for kicking out VMs. 
+
+2. In the run_experiment() logic, the simulator decides what to migrate, and then what to resume? So when the overall state is in resume state, the simulator only does one thing? 
+
+*Can we simply print the migration plan? Simply print all the VMs state very interval? 
+Does it record the current hosts, and their master hosts? How do we account for full and partial migrations?
+A: Yes. We have a function to record the migration times. Simply add a printing functions close to there to output the migration plan. 
 
 -Detailed explanations
 Vdi-sim is a simple cluster-wide Virtual Destktop Infrastructure(VDI) server simulator that replays the desktop traces and simulates the power consumption and performance impacts. It supports the hybrid policies of combining full and partial VM migration techniques. The simulator assumes there exists a centralized controller software that coordinates the power management of a VDI server cluster. 
