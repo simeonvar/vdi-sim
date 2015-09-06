@@ -1,7 +1,12 @@
 vdi-sim
 =======
+-How to run simulator
+After we edit the ./setting files, simply hit:
+      python vdi-sim.py'
+It will take a while to finish.
 
-Vdi-sim is a simple cluster-wide Virtual Destktop Infrastructure(VDI) server simulator that supports different policies of combining full and partial VM migration techniques to simulate power consumption and performance impacts. The simulator assumes there exists a centralized controller software that coordinates the power management of a VDI server cluster. 
+-Detailed explanations
+Vdi-sim is a simple cluster-wide Virtual Destktop Infrastructure(VDI) server simulator that replays the desktop traces and simulates the power consumption and performance impacts. It supports the hybrid policies of combining full and partial VM migration techniques. The simulator assumes there exists a centralized controller software that coordinates the power management of a VDI server cluster. 
 
 Vdi-sim takes VM activity traces as input. Each VDI server hosts a number of desktop virtual machines(VM). At each second, we measure the state of each VM. There are two defined VM states: idle and active. If there is no keyboard or mouse activity in a VM during a second, then the VM is defined to be idle, otherwise active. So a traces file for 8 VMs looks like below(Each line specifies the VM states during a particular second of the date):
 
@@ -9,7 +14,9 @@ Vdi-sim takes VM activity traces as input. Each VDI server hosts a number of des
 1,0,1,0,1,0,0,1
 ....
 
-Vdi-sim reads the traces file and makes decisions of whether or how to consolidate the vDI servers so as to save power. A very naive approach is to fully migrate all VMs when there are enough resources in the destination host(s) and power off a VDI server. There are a few questions to be answered: 
+Vdi-sim reads the traces file and makes decisions of whether or how to consolidate the VDI servers so as to save power. A very naive approach is to fully migrate all VMs when there are enough resources in the destination host(s) and power off a VDI server. 
+
+There are a few questions to be answered: 
 
 Q1. Is it worthwhile to migrate? If more VMs are to be waken up and to turn into acitve, then the destination host(s) do not have cacpacity to host them any more. In this case, we may have to power on the original host and migrate them back again? If we know the VMs become active soon, can we make smarter decisions so that we save network bandwidth and migration downtime? Vdi-sim enables different policies, e.g., aggressive ones such as migrate VMs whenever possible, or mild policies such as only migrate whenever there is enough room of resource in the destination host to allow the resource consumption to grow. 
 
@@ -37,7 +44,7 @@ There are 3 types of VM state transitions:
       2. Local idle -> active 
       3. Remote idle -> active
 
-For Case 1, If swap is not enabled, then local idle VMs' RAM are not swapped out, they are still using that many resources, so we can do nothing about them. If swap is enabled, then we swapped it out if there is resources. 
+For Case 1, If hypervisor level swapping is not enabled, then local idle VMs' RAM are not swapped out, they are still using that many resources, so we can do nothing about them. If swapping is enabled, then we swapped it out if there is resources. 
 
 For Case 2, if we have enough resources, then we use them and put the swaps back. Otherwise, we need to kick some others out. Refer to Policy C. 
 
@@ -55,9 +62,3 @@ Algorithm:
 Assumption: 
 1. Every VDI server has the same capacity slack
 2. Hypervisor supports swapping. 
-
-
-
-
-
-
