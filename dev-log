@@ -1,0 +1,10 @@
+vdi-sim.py: L517, Sept.07, 2015
+I had no idea why I added the "if True:" clause to make all migrations full. Is that because I want to simulate the case of using full migration alone? 
+After I commented it out, it does not work any more. there is the assertion errors in L693. 
+I need to revert the code to the version that works. Use the github to do so. 
+Follow-up: I pulled the commit d91fbf7dcdb028616af80e595cd4f76b54a619df from github, where it worked in 200VM. Yes. it worked. But I saw some bugs in the code. I had no idea whether those are bugs.
+
+TODO: There are two places where I need to change: 
+-decide_detailed_migration_plan() function: 
+-accounting function
+to add the accounting. sorted by source host or dest. host. And sum them up for our accouting. how many pairs. Full or partial.
