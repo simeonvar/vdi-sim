@@ -18,8 +18,33 @@ questions: 1. What is partial resume#? Is it reintegration?
 A: resume == reintegration
 
 2. Is there any case we leave the remote partials that are turning into active to run on the current host? 
-A: It seems no. How do we handle such cases?
+A: If there is enough room in the host, do we migrate the rest of the VM to this host?
 
-3. Is "partial idle VM# turning into active" number reliable?
+3. How do we handle such cases?
+A: There are 2 glitches in the simulator: 
+   a. The simulator is bad in that while it is migrating, it ignores that VMs that turn into active from idle. And keeps it running again. 
+   b. it does not have this aborted migrations#. 
 
-4. Is it because we have some migration intevals, so that we have to wait for the migrations to finish? So the simulator does not make the decision right now? There is a lagging behind? 
+So the logic should be like this: 
+   during migrating from host a to host b, if some VMs from a turning into active, then there are 2 cases, 
+   if b has enough resources to accomandate the VMs, then make them full migrations.
+   if not, then abort all migrations from host a. We should record the aborted full migration#, and partial migration#. 
+TODO: add this logic later. 
+
+
+4. Is "partial idle VM# turning into active" number reliable?
+A: we don't care about this number for now. 
+
+5. Is it because we have some migration intevals, so that we have to wait for the migrations to finish? So the simulator does not make the decision right now? There is a lagging behind? 
+
+I may just print out the detailed migrated logs, instead of just a number of VMs for each host.
+So I should write a program to deduct the migration latency from the logs of migrations. Pick an order for the migrated VMs. Simply the default order of printing out there. 
+
+If its host has enough capacity (i.e., in the transition log csv file the 6th column is N), then it is local partial -> full transitions, we note down its latency as 0. Otherwise, we need to calculate its dependency on other migrations. 
+
+Update at 12:21AM Sept. 9, 2015:
+1. I wrote the script to correlate the two logs. it is in ~/Dropbox/. 
+2. There are some errors with the logs. Some partially migrated VMs are left not migrated. There lack of actions from the host logs to make room for those VMs. 
+3. There are lagging behind the actions. So the errors are wrong about them. I need to debug the simulator. The results could easily go wrong. 
+
+Should account for the local partials waiting for others VMs to make space for them. 

@@ -134,8 +134,8 @@ def update_vms(of4, cur_sec, vm_states):
     (h,m,sec) = format_cur_time(cur_sec)
     for i in range(0, nVMs):
         if vms[i].state < 1 and vm_states[i] >=1: # idle to transitions
-            line = "%d, "% cur_sec
-            line += "%d:%d:%d, "%(h,m,sec)
+            line = "%d,"% cur_sec
+            line += "%d,"%(i)
             line += "%d,%d,"% (vms[i].origin, vms[i].curhost)
             cur_host = vms[i].curhost
             idles_in_curhost = 0
@@ -217,16 +217,22 @@ def output_migration_maps(of3, cur_sec, full_migrations, partial_migrations, res
         full_cnt = 0
         partial_cnt = 0 
         resume_cnt = 0
+        full_migrated_vms = ""
+        partial_migrated_vms = ""
+        resume_vms = ""
         if pair in full_migrations:
-            full_cnt = full_migrations[pair]
+            full_cnt = full_migrations[pair][0]
+            full_migrated_vms = full_migrations[pair][1]
         if pair in partial_migrations:
-            partial_cnt = partial_migrations[pair]
+            partial_cnt = partial_migrations[pair][0]
+            partial_migrated_vms = partial_migrations[pair][1]
         if pair in resume_migrations:
-            resume_cnt = resume_migrations[pair]
+            resume_cnt = resume_migrations[pair][0]
+            resume_vms = resume_migrations[pair][1]
         line = "%d, "% cur_sec
         line += "%d:%d:%d, "%(h,m,sec)
         line += "%d,%d,"%pair
-        line += "%d,%d,%d\n"%(full_cnt, partial_cnt, resume_cnt)
+        line += "%d,%s,%d,%s,%d,%s\n"%(full_cnt, full_migrated_vms, partial_cnt, partial_migrated_vms, resume_cnt, resume_vms)
         of3.write(line)
 
 def run(inf, outf):
@@ -251,10 +257,10 @@ def run(inf, outf):
     of2_header += "\n"    
     of2.write(of2_header)
 
-    of3_header = "Current Second,Time,Source Host,Destination Host,Full Migration Number,Partial Migrations Number,Reintegration Number\n"
+    of3_header = "Current Second,Time,Source Host,Destination Host,Full Migration Number, Full Migrated VMs, Partial Migrations Number, Partial Migrated VMs, Reintegration Number, Reintegrated VMs\n"
     of3.write(of3_header)
 
-    of4_header = "Current Second,Time, Source Host, Current Host, Current Host idle VMs, Current Host Active VMs, Current Host Resource Consumption, Exceeding Capacity(Y/N) \n"
+    of4_header = "Current Second, VM index, Source Host, Current Host, Current Host idle VMs, Current Host Active VMs, Current Host Resource Consumption, Exceeding Capacity(Y/N) \n"
     of4.write(of4_header)
 
     # current VM states in a time interval
@@ -313,8 +319,6 @@ def run(inf, outf):
                 vdi_activeness[i/vms_per_vdi] += (1.0/float(vms_per_vdi))
                 if cur_vdi_states[i/vms_per_vdi] == S3:
                     vm_active_vdi_migrated_secs += 1
-            # else:
-            # vm_states[i] = 0
         
         if cur_sec % interval == 0 and cur_sec > 0:
             # update global variable vms state and origin hosts
@@ -567,15 +571,18 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                 vms_copy[vm_index].origin = dest
                 full_migrate_times += 1
                 if migration_pair in full_migrations:
-                    full_migrations[migration_pair] += 1
+                    full_migrations[migration_pair][0] += 1
+                    full_migrations[migration_pair][1] += ("-"+str(vm_index))
                 else:
-                    full_migrations[migration_pair] = 1
+                    full_migrations[migration_pair] = [1,str(vm_index)]
             else:
                 partial_migrate_times += 1
                 if migration_pair in partial_migrations:
-                    partial_migrations[migration_pair] += 1
+                    cur_migration_times = partial_migrations[migration_pair][0]
+                    partial_migrations[migration_pair][0] = cur_migration_times + 1
+                    partial_migrations[migration_pair][1] += ("-"+str(vm_index))
                 else:
-                    partial_migrations[migration_pair] = 1
+                    partial_migrations[migration_pair] = [1,str(vm_index)]
 
     # delete update the vms 
     del vms[:]
@@ -869,22 +876,25 @@ def account_migration_times(vms_copy):
             if vms[i].state >= 1:
                 full_migrate_times += 1
                 if migration_pair in full_migrations:
-                    full_migrations[migration_pair] += 1
+                    full_migrations[migration_pair][0] += 1
+                    full_migrations[migration_pair][1] += ("-"+str(i))
                 else:
-                    full_migrations[migration_pair] = 1
+                    full_migrations[migration_pair] = [1,str(i)]
             else:
                 if vms_copy[i].curhost == vms_copy[i].origin:
                     partial_resume_times += 1
                     if migration_pair in resume_migrations:
-                        resume_migrations[migration_pair] += 1
+                        resume_migrations[migration_pair][0] += 1
+                        resume_migrations[migration_pair][1] += ("-"+str(i))
                     else:
-                        resume_migrations[migration_pair] = 1
+                        resume_migrations[migration_pair] = [1,str(i)]
                 else:
                     partial_migrate_times += 1
                     if migration_pair in partial_migrations:
-                        partial_migrations[migration_pair] += 1
+                        partial_migrations[migration_pair][0] += 1
+                        partial_migrations[migration_pair][1] += ("-"+str(i))
                     else:
-                        partial_migrations[migration_pair] = 1
+                        partial_migrations[migration_pair] = [1,str(i)]
     return (partial_migrate_times, full_migrate_times, partial_resume_times, full_migrations, partial_migrations, resume_migrations)
 
 def decide_to_resume(vdi_states, cur_sec, of2):
@@ -1002,7 +1012,6 @@ def get_migrating_vdi_stats(next_states):
                     nIdles += 1
                 else:
                     nActives += 1
-
     return (nActives, nIdles)
 def get_reintegrating_vdi_stats(next_states):
 
