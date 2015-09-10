@@ -1,39 +1,61 @@
 vdi-sim.py: L517, Sept.07, 2015
 I had no idea why I added the "if True:" clause to make all migrations full. Is that because I want to simulate the case of using full migration alone? 
-After I commented it out, it does not work any more. there is the assertion errors in L693. 
-I need to revert the code to the version that works. Use the github to do so. 
-Follow-up: I pulled the commit d91fbf7dcdb028616af80e595cd4f76b54a619df from github, where it worked in 200VM. Yes. it worked. But I saw some bugs in the code. I had no idea whether those are bugs.
+R: After I commented it out, it does not work any more. there is the assertion errors in L693. 
 
-TODO: There are two places where I need to change: 
+I need to revert the code to the version that works. Use the github to do so. 
+R: I pulled the commit d91fbf7dcdb028616af80e595cd4f76b54a619df from github, where it worked in 200VM. Yes. it worked. But I saw some printouts like "bug:XXXX" in the code. I had no idea whether those are bugs. They should not be harmful. 
+
+There are two places where I need to change to record the migration maps:
 -decide_detailed_migration_plan() function: 
 -accounting function
 to add the accounting. sorted by source host or dest. host. And sum them up for our accouting. how many pairs. Full or partial.
+R: Done
 
 From the implementation of update_vms, it seems that we always reintegrate the remote partials and turn its current host into its origin host. It will make things worse for these VMs. 
 A: I commented out the line that assign the current host as its origin host, and see if things change. The re-integration number should be bigger than before.=> Yes. I verified that. 
 
 After commenting out the line, the overall saving does not change that much. The partial resume# increases. Full migration# increases. 
 
-questions: 1. What is partial resume#? Is it reintegration?
+Q: 1. What is partial resume#? Is it reintegration?
 A: resume == reintegration
 
-2. Is there any case we leave the remote partials that are turning into active to run on the current host? 
-A: If there is enough room in the host, do we migrate the rest of the VM to this host?
+2. Is there any case we leave the remote partials that are turning into active to run on the current host? If there is enough room in the host, do we migrate the rest of the VM to this host?
+A: TODO
 
 3. How do we handle such cases?
-A: There are 2 glitches in the simulator: 
-   a. The simulator is bad in that while it is migrating, it ignores that VMs that turn into active from idle. And keeps it running again. 
-   b. it does not have this aborted migrations#. 
+A: There are a glitch in the simulator: The simulator is bad in that while it is migrating, it ignores that VMs that turn into active from idle. And keeps it running again. it does not have any aborted migrations.
 
 So the logic should be like this: 
    during migrating from host a to host b, if some VMs from a turning into active, then there are 2 cases, 
    if b has enough resources to accomandate the VMs, then make them full migrations.
    if not, then abort all migrations from host a. We should record the aborted full migration#, and partial migration#. 
-TODO: add this logic later. 
+   This logic makes sense to achieve the best performance and be fair to the minority of VMs that turn into active while migrating. 
+   The question is, a. whether it is sacrifice the energy saving for a little performance guarantee, and more implementationcomplexity in the controller? 
 
+   b. how often do such cases happen? Is it better than full migrations in this sense? Why would full migrations have more aborted migrations? 
+   A: Full migration takes a long time, so the chances there are some VMs turning into active become higher. So they need to abort the migration. 
 
-4. Is "partial idle VM# turning into active" number reliable?
-A: we don't care about this number for now. 
+   c. Can we make it full migration during the partial migration? 
+   A: Theoretically, yes. We can unpause the original guest if it becomes active, and continue the partial migration. The transferred pages won't be wasted. From a stop-and-copy migration, it turns into an iterative migration. The problem is in the implementation. How do we monitor the user action? If the VM is paused, how do we know the VM is being activated? We use a keyboard and mouse monitor approach before. How do we do it here? 
+
+So we abort the whole host migration, then there are some of the re-integrations we need to do. 
+
+There are 3 types of idle VMs that become active:
+   a. the VMs that have finished the migrations
+   b. the VMs that have not started the mgirations
+   c. the VMs that are in the middle of being partially migrated. 
+
+for a., If we start post-partial migration, then it will add another task in the out-flow or in-flow queue.
+    The best optioin is, if there is still enough resources in the host, we should re-integrate it, then start a live migration instead. If there is not enough resources any more, we should abort all migrations. The goal is to reduce the transfer waste.
+
+for b.,then make it a full migration. No overhead is needed. 
+
+for c. Abort the migration. Depending on the resource in the destination host, we either restart as a full migration or abort all migrations for the entire host. 
+
+TODO: To add this logic.
+
+4. Is "partial idle VM# turning into active" column reliable?
+A: We don't care about this number for now. 
 
 5. Is it because we have some migration intevals, so that we have to wait for the migrations to finish? So the simulator does not make the decision right now? There is a lagging behind? 
 
@@ -45,6 +67,32 @@ If its host has enough capacity (i.e., in the transition log csv file the 6th co
 Update at 12:21AM Sept. 9, 2015:
 1. I wrote the script to correlate the two logs. it is in ~/Dropbox/. 
 2. There are some errors with the logs. Some partially migrated VMs are left not migrated. There lack of actions from the host logs to make room for those VMs. 
-3. There are lagging behind the actions. So the errors are wrong about them. I need to debug the simulator. The results could easily go wrong. 
+A: Nope.This is not right. The idle->active transition does not lead to that VM being migrated. it could lead to other VMs being kicked out. So we need to look at the actions that we are taking from its current host. 
 
-Should account for the local partials waiting for others VMs to make space for them. 
+a. If in the current host's kick-out list, then it is being migrated out. But I doubt that is the case. 
+b. Otherwise, we are looking at one out-flow queue from the current host, and all the destination queues.
+
+
+3. There are about 300s lagging behind the actions. So the errors are wrong about them. I need to debug the simulator. The results could easily go wrong. 
+
+4. There is a bug in the migrations-by-interval.csv logs. When the partial migration number is 1, there is no recording there. 
+A: it is not a bug. It is just that when we look at the Libreoffice spreadsheet, the width of the column of migrated VMs are really wide. 
+
+5. The program is wrong in there is no aborted migrations. During the migration intervals, they have to wait for all migrations to finish and then deal with the memory pressure. 
+a. my program will simply skip those rows and handle the rows with immediate actions first. The latency for those skipped rows should be at least 300 + whatever latency for those rows. 
+
+b. We need to calculate the forward propagation of effect. The algorithm is like this:
+   i. for that interval, we simply iterate all lines of the source host, and we only look at position of the last element in the source queue. For example, the position of "7" in queue "1-2-8-9-5-7" is 6.  If this element's position in any destination queue is ahead of the position, then we inject enough 0 into that destination queue so that we let it end up the same position as the source queue. For example, there is a destination queue like this "3-7-6", we need to inject four "A"s into the queue to become like this: "3-A-A-A-A-7-6". Now "7" is in the 6th position as the same as the source code. This is because the destinations host have to wait for the out-flow order of the source queue. 
+   ii. after the first round, the position of 7 should be the same as or greater than that of 7 in its source queue.
+
+Update on 4:09pm Sept. 9, 2015
+I wouldn't be able to correlate the results with the adjusted_*** scripts. I need to look at them and debug the algorithm. Something is wrong when merging the destination queues. 
+
+TODO: Also, I need to consider the mixing the full migration with the partial migrations as well. 
+
+TODO: 8:41AM, September 10, 2015
+a. clean tne data sheet first. The problem is there are too many inconsistency in the data. I have to deal with them with my code. It is error prone. 
+
+b. I should read my logs above, and think of what else need to be done. Or need to be careful. 
+
+Finally I clean up the correlation script and calculate the latency for the making room for local partials. Next step: latency for the remote partials. 
