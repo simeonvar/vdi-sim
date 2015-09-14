@@ -55,10 +55,29 @@ for l in open(log_file, "r"):
         else:
             localPartials_no_migration += 1
 
-print "1) local partial -> active VM#: %d\ 2 categories of host action:     1.1) host has enough resource, no migration is needed:  %d     or     1.2) host kicks out other VMs to make space: %d 2) remote partial -> active VM#: %d     2.1) host does the post-partial migration: %d     or    2.2) host decide to reintegrate it back to its origin: %d local partial -> active latency: %.1f  remote partial -> active latency: %.1f all idle -> active latency: %.1f" %( localPartials, localPartials_no_migration, localPartials_need_kickout, remotePartials, remotePartials_do_post_partials, remotePartials_reintegrate, float(total_localPartial)/localPartials, float(total_remotePartial)/remotePartials, float(total_remotePartial+total_localPartial)/(localPartials+remotePartials))
+print "1) local partial -> active VM#: %d\ 2 categories of host action:" %localPartials
+print "  1.1) host has enough resource, no migration is needed:  %d     or    "%localPartials_no_migration
+print " 1.2) host kicks out other VMs to make space: %d"% localPartials_need_kickout
+print " 2) remote partial -> active VM#: %d  "%remotePartials
+print "  2.1) host does the post-partial migration: %d     or   "%remotePartials_do_post_partials
+print " 2.2) host decide to reintegrate it back to its origin: %d "%remotePartials_reintegrate
+print "local partial -> active latency(ave): %.1f"%(float(total_localPartial)/localPartials)
+print "Max of local partials: %d" % max(localPartials_a)
+print "Standard Deviation of local partials: %d" % np.std(localPartials_a)
+print "remote partial -> active latency: %.1f"%( float(total_remotePartial)/remotePartials)
+print "Max of remote partials: %d" % max(remotePartials_a)
+print "Standard Deviation of remote partials: %d" % np.std(remotePartials_a)
+print "all idle -> active latency: %.1f" %(float(total_remotePartial+total_localPartial)/(localPartials+remotePartials))
+mergedlist = remotePartials_a + localPartials_a
+print "Max of all: %d" % max(mergedlist)
+print "Standard Deviation of all: %d" % np.std(mergedlist)
 
-data = localPartials_a
+#data = localPartials_a
+data = remotePartials_a
 sorted_data = np.sort(data)
 yvals=np.arange(len(sorted_data))/float(len(sorted_data))
 plt.plot(sorted_data,yvals)
+plt.xlabel('Latency (s)')
+plt.ylabel('CDF')
+plt.title("Remote Partials VMs -> Active")
 plt.show()

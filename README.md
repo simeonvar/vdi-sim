@@ -1,5 +1,9 @@
 vdi-sim
 =======
+-Document structure
+The data/ folder stores the results. 
+The data-processing stores the processed results and graphs. 
+
 -How to run simulator
 A: After we edit the ./setting files, simply hit:
       python vdi-sim.py'

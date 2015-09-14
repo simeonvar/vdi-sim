@@ -11,7 +11,6 @@ of = open(output, "w+")
 
 cnt = 0
 for l in open(vm_logs):
-    skip_this_line = False
     cnt += 1
     if cnt == 1:
         newline = l.rstrip() + ",Latency,Source Queue,Destination Queue(s)\n"
@@ -36,9 +35,12 @@ for l in open(vm_logs):
         latency = 0             # local partial -> full when there is resources at the host
     if exceed == "N" and src != cur:
         latency = FULL_MIGRATION_LATENCY # finish the rest of the migration
+
+    skip_this_line = False
     if exceed == "Y": 
         dests = {}              # key is the destination host, value is the dest queue.
         first_line = True
+        skip_this_line = True   # by default, we assign it to be True
         for l2 in open(host_logs):
             if first_line:
                 first_line =False # skip the header row
@@ -47,12 +49,24 @@ for l in open(vm_logs):
             timestamp2 = int(splits2[0])
             if timestamp2 != timestamp+LAGS_BETWEEN_TWO_LOGS and timestamp2 != timestamp: # should be ahead of the current timestamp
                 continue
-                
+            else:
+                skip_this_line = False # we find that timestamp that matches the action. otherwise, we skip this line
+
             src2 = int(splits2[2])
             if cur == src2: # if the current host of the vm is equal to the source host of the migration logs
                 partial_migration_number = int(splits2[6])
                 if partial_migration_number > 0:
                     partial_vm_sequence = splits2[7]
+                    if source_queue == "":
+                        source_queue += (partial_vm_sequence)                
+                    else:
+                        source_queue += ("-"+partial_vm_sequence)                
+                    dst =(int(splits2[3]))
+                    if dst not in dests:
+                        dests[dst] = ""
+                reintegration_number = int(splits2[8])
+                if reintegration_number > 0:
+                    partial_vm_sequence = splits2[9]
                     if source_queue == "":
                         source_queue += (partial_vm_sequence)                
                     else:
@@ -76,7 +90,10 @@ for l in open(vm_logs):
                     dests[dst2] += (splits2[7])
                 else:
                     dests[dst2] += ("-" + splits2[7])
-
+                if dests[dst2] == "":
+                    dests[dst2] += (splits2[9])
+                else:
+                    dests[dst2] += ("-" + splits2[9])
         for dst in dests:
 
             assert dests[dst][0] != '-'
