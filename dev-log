@@ -95,4 +95,11 @@ a. clean tne data sheet first. The problem is there are too many inconsistency i
 
 b. I should read my logs above, and think of what else need to be done. Or need to be careful. 
 
-Finally I clean up the correlation script and calculate the latency for the making room for local partials. Next step: latency for the remote partials. 
+Update at 1:16pm, Sept. 10, 2015
+I clean up the correlation script and calculate the latency for the making room for local partials. 
+
+Next step: latency for the remote partials. 
+There are two cases for remote partials: 1) remote partials becoming local full by post partial migrations (depending on the in-flow host queue, and the out-flow queue from its original host which is less a case). It requires that the current host has ENOUGH resources to host it. 
+2) remote partials reintegrated back to its original host (takes 5s) 
+3) remote partials being migrated out somewhere else, and post-migrated there. 
+TODO: For simplicity, I simply treat all of the latency as 40s post-partial migrations. 
