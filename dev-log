@@ -103,3 +103,11 @@ There are two cases for remote partials: 1) remote partials becoming local full 
 2) remote partials reintegrated back to its original host (takes 5s) 
 3) remote partials being migrated out somewhere else, and post-migrated there. 
 TODO: For simplicity, I simply treat all of the latency as 40s post-partial migrations. 
+
+Sep. 16, 2015
+Found a bug: 2 cases: either 1) the reporting of original host is wrong or 2) the decide_to_resume function is wrong. 
+A: Fixed. There is a small indent problem with the output statements. 
+
+I fixed the bug in the simulator to make the migrations to make sense now.
+
+Found another bug: The vdi-sim.py script does not keep correct account for the migrations that happens. Especially, it messed up the reintegrations with partial migrations. But it does not matter right now for the latency, but it matters for the illustration. 

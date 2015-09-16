@@ -5,6 +5,8 @@ import math
 import linecache, time
 # a simple simulator program 
 
+target_timestamp = 345600
+
 SETTING = "./setting.conf"
 DAYS = 7
 
@@ -206,6 +208,71 @@ def output_interval(of2, vm_states, vdi_states, cur_sec):
     line += "%f,"%active_vdis
     of2.write(line)
 
+def output_target_timestamp(cur_sec, vdi_states, result_file):
+    if True:                    # I'm lazy to fix the block's indent
+        if True:
+            if cur_sec == target_timestamp or cur_sec == target_timestamp + interval or cur_sec == target_timestamp - interval:
+                # report the results
+                rf = open(result_file, "a+")
+                # look at the VDI servers and their states
+                line = "Overall state: %s\n" % get_overall_state(vdi_states)
+                rf.write(line)
+                line = "VDI#,"
+                for i in range(0, nVDIs):
+                    line += "%d,"%i
+                line += '\n'
+                rf.write(line)
+
+                line = "State,"
+                for i in range(0, nVDIs):
+                    cur_vdi_states = vdi_states[-1]
+                    line += "%s,"%(state_str(cur_vdi_states[i])) # vdi state
+                line += '\n'
+                rf.write(line)
+                # vdi as the current host
+                vdi_curhost = {}
+                vdi_curhost_idle = {}
+                vdi_curhost_active = {}
+                vdi_origin = {}
+                for i in range(0, nVDIs):
+                    vdi_curhost[i] = 0
+                    vdi_origin[i] = 0
+                    vdi_curhost_idle[i] = 0
+                    vdi_curhost_active[i] = 0
+                for i in range(0, nVMs):
+                    v = vms[i]
+                    vdi_curhost[v.curhost] += 1
+                    if v.state == 0:
+                        vdi_curhost_idle[v.curhost] += 1
+                    else:
+                        vdi_curhost_active[v.curhost] += 1
+                    vdi_origin[v.origin] += 1
+                line = "Current host,"
+                for i in range(0, nVDIs):
+                    line += "%d,"%vdi_curhost[i]
+                line += '\n'
+                rf.write(line)
+
+                line = "Current hosting idle VMs,"
+                for i in range(0, nVDIs):
+                    line += "%d,"%vdi_curhost_idle[i]
+                line += '\n'
+                rf.write(line)
+
+                line = "Current hosting active VMs,"
+                for i in range(0, nVDIs):
+                    line += "%d,"%vdi_curhost_active[i]
+                line += '\n'
+                rf.write(line)
+
+                line = "Origin host,"
+                for i in range(0, nVDIs):
+                    line += "%d,"%vdi_origin[i]
+                line += '\n'
+                rf.write(line)
+                rf.close()
+
+
 def output_migration_maps(of3, cur_sec, full_migrations, partial_migrations, resume_migrations):
     (h,m,sec) = format_cur_time(cur_sec)
 
@@ -325,12 +392,13 @@ def run(inf, outf):
                 vdi_activeness[i/vms_per_vdi] += (1.0/float(vms_per_vdi))
                 if cur_vdi_states[i/vms_per_vdi] == S3:
                     vm_active_vdi_migrated_secs += 1
-        
+            
         if cur_sec % interval == 0 and cur_sec > 0:
             # update global variable vms state and origin hosts
             itoactive = update_vms(of4, cur_sec, vm_states)
             remote_partial_vm_into_active += itoactive
-
+            result_file = outf + "-before-%d.csv"%cur_sec
+            output_target_timestamp(cur_sec, vdi_states, result_file)
             output_interval(of2, vm_states, vdi_states, cur_sec)
             # Reaching the end of the interval, time to make decision
             (next_vdi_states, partial_migration_times, full_migration_times, partial_resume_times, full_migrations, partial_migrations, resume_migrations) = make_decision(vm_states, vdi_states, cur_sec, of2)
@@ -343,7 +411,8 @@ def run(inf, outf):
             vdi_states.append(next_vdi_states)
 
             output_migration_maps(of3, cur_sec, full_migrations, partial_migrations, resume_migrations)
-
+            result_file = outf + "-after-%d.csv"%cur_sec
+            output_target_timestamp(cur_sec, vdi_states,result_file)
             # re-init the vm_states to 0
             for j in range(0, nVMs):
                 vm_states[j] = 0
@@ -539,7 +608,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                         break
             
             if dest == -1:
-                print "Couldn't find dest (This is harmless. Probably because the simulator thought the migration is possible based on the sum of the vdis, but vms are inseparatable units.")
+                print "Couldn't find dest (This is harmless. Probably because the simulator thought the migration is possible based on the sum of the vdis, but vms are inseparatable units."
                 o ="VDIs to_migrate:"
                 for i in to_migrate:
                     o += "%d"%i
@@ -774,7 +843,7 @@ def try_to_allocate(vdi_set, vms_copy, vdi_states):
                     local_idle_vms.append(v)
                 elif v.curhost == i and v.state != 0 and v.origin == i:
                     active_vms.append(v)
-                else:           # else they are remote partials
+                elif v.curhost == i and v.origin != i: # remote partials
                     # find dest.
                     for k in vdi_set:
                         if i == k:

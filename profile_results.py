@@ -10,11 +10,16 @@ localPartials = 0
 localPartials_a = []
 localPartials_no_migration = 0
 localPartials_need_kickout = 0
+localPartials_max = -1
+localPartials_max_timestamp = -1
+
 
 remotePartials = 0
 remotePartials_a = []
 remotePartials_do_post_partials = 0
 remotePartials_reintegrate = 0
+remotePartials_max = -1
+remotePartials_max_timestamp = -1
 
 total_localPartial = 0
 total_remotePartial = 0
@@ -32,6 +37,9 @@ for l in open(log_file, "r"):
         remotePartials += 1
         remotePartials_a.append(latency)
         total_remotePartial += latency
+        if latency > remotePartials_max:
+            remotePartials_max = latency
+            remotePartials_max_timestamp = timestamp
         if exceed == "Y":        
             source_host_wakeup = False # see if any of the source host is wakeup
             dest_queues = splits[10:-1]
@@ -50,6 +58,9 @@ for l in open(log_file, "r"):
         localPartials += 1
         localPartials_a.append(latency)
         total_localPartial += latency
+        if latency > localPartials_max:
+            localPartials_max = latency
+            localPartials_max_timestamp = timestamp
         if exceed == "Y":
             localPartials_need_kickout += 1
         else:
@@ -61,13 +72,15 @@ print " 1.2) host kicks out other VMs to make space: %d"% localPartials_need_kic
 print " 2) remote partial -> active VM#: %d  "%remotePartials
 print "  2.1) host does the post-partial migration: %d     or   "%remotePartials_do_post_partials
 print " 2.2) host decide to reintegrate it back to its origin: %d "%remotePartials_reintegrate
-print "local partial -> active latency(ave): %.1f"%(float(total_localPartial)/localPartials)
-print "Max of local partials: %d" % max(localPartials_a)
+print "local partial -> active average latency: %.1f"%(float(total_localPartial)/localPartials)
+print "Max of local partials: %d" % localPartials_max
+print "Timestamp of Max of local partials: %d" % (localPartials_max_timestamp)
 print "Standard Deviation of local partials: %d" % np.std(localPartials_a)
-print "remote partial -> active latency: %.1f"%( float(total_remotePartial)/remotePartials)
-print "Max of remote partials: %d" % max(remotePartials_a)
+print "remote partial -> active average latency: %.1f"%( float(total_remotePartial)/remotePartials)
+print "Max of remote partials: %d" % remotePartials_max
+print "Timestamp of Max of remote partials: %d" % (remotePartials_max_timestamp)
 print "Standard Deviation of remote partials: %d" % np.std(remotePartials_a)
-print "all idle -> active latency: %.1f" %(float(total_remotePartial+total_localPartial)/(localPartials+remotePartials))
+print "all idle -> active average latency: %.1f" %(float(total_remotePartial+total_localPartial)/(localPartials+remotePartials))
 mergedlist = remotePartials_a + localPartials_a
 print "Max of all: %d" % max(mergedlist)
 print "Standard Deviation of all: %d" % np.std(mergedlist)

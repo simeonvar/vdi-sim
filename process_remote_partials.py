@@ -3,14 +3,19 @@
 import sys
 import random
 log_file = sys.argv[1]
+host_logs = sys.argv[2]
 of = open(log_file+"-updated-remote-partials.csv", "w+")
+
+nIntervals_ahead = 3
 
 reintegration_count = 0
 post_partial_no_migration = 0 
 post_partial_somewhere_else = 0
-not_handled_in_this_inteval = 0
 source_queue_inconsistency = 0
 dest_queue_inconsistency = 0
+
+found_handled_later_interval = 0
+make_handle_next_inteval = 0
 
 for l in open(log_file, "r"):
     splits = l.rstrip().lstrip().split(",")
@@ -38,6 +43,8 @@ for l in open(log_file, "r"):
             q = d.split(":")[1]
             dest_queue_len = len(q.split("-"))
             assert dest_queue_len > 0
+            if dest_queue_len > queue_len:
+                queue_len = dest_queue_len
             if dst == str(src):
                 reintegration = True
                 if str(vm_index) not in vm_sequence:
@@ -61,8 +68,31 @@ for l in open(log_file, "r"):
             latency = (pos+1) * 4 # not considering destination queue
             reintegration_count += 1
         elif str(vm_index) not in vm_sequence:
-            latency = 300 + 40  # TODO: we need to consider the case where it was handled in the next next inteval
-            not_handled_in_this_inteval += 1
+            pos_in_next_interval = -1
+            found_timestamp = -1
+            skip_first_line = True
+            for l2 in open(host_logs, "r"):
+                if skip_first_line:
+                    skip_first_line = False
+                    continue
+                splits2 = l2.rstrip().lstrip().split(",")
+                timestamp2 = int(splits2[0])
+                src2 = int(splits2[2])
+                dst2 = int(splits2[3])
+                if timestamp2 > timestamp and timestamp2 < nIntervals_ahead * 300 + timestamp: # we only look at the next n intervales
+                    if cur == src2:
+                        found_timestamp = timestamp2 
+                        partial_vm_sequence = splits2[7]
+                        src2_len = len(partial_vm_sequence.split("-"))
+                        pos_in_next_interval = random.randint(0,src2_len)
+                        break
+            if found_timestamp != -1:
+                assert pos_in_next_interval != -1
+                latency = found_timestamp - timestamp + (pos_in_next_interval)*4 + 40  # TODO: we need to consider the case where it was handled in the next next inteval
+                found_handled_later_interval += 1
+            else:
+                latency = 300 + 40  # Make it the first thing to handle in the next next inteval
+                make_handle_next_inteval += 1
         else:
             # it is in the source queue, then get the position of the source queue
             pos = vm_sequence.index(str(vm_index))    
@@ -79,6 +109,7 @@ of.close()
 print "Reintegration count: %d" % reintegration_count
 print "post_partial_no_migration %d" %post_partial_no_migration
 print "post_partial_somewhere_else %d" % post_partial_somewhere_else 
-print "not_handled_in_this_inteval %d" % not_handled_in_this_inteval
 print "source_queue_inconsistency: %d"%source_queue_inconsistency
 print "dest_queue_inconsistency: %d" % dest_queue_inconsistency
+print "found_handled_later_interval %d"%found_handled_later_interval
+print "make_handle_next_inteval: %d"%make_handle_next_inteval
