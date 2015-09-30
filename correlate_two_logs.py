@@ -14,7 +14,7 @@ for l in open(vm_logs):
     cnt += 1
     if cnt == 1:
         newline = l.rstrip() + ",Latency,Source Queue,Destination Queue(s)\n"
-        of.write(newline)
+        #of.write(newline)
         continue                # skip the header
     splits = l.rstrip().split(",")
     timestamp = int(splits[0])
