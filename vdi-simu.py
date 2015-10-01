@@ -617,11 +617,21 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
 
     for i in to_migrate:
         migration_latency = 0   # cumulative migration latency needed. If exceeds, then we stop the migration 
+        local_partials = []
+        remote_partials = []
+        actives = []
         # for each vm in this vdi to migrate
         for v in range(0, nVMs):
-            if vms[v].curhost != i: # all the vms residing in this host
-                continue
-            vm_index = v
+            if vms[v].curhost == i: # all the vms residing in this host
+                if vms[v].state > 0: 
+                    actives.append(v)
+                else:
+                    if vms[v].origin != vms[v].curhost:
+                        remote_partials.append(v)
+                    else:
+                        local_partials.append(v)
+        # What VM types are our priority to migrate? I think of such order: full > Remote partial > Local partial. We put the local partial VMs into lowest priority because they are the "dangerous" ones. If they become active they may cause 1) migration abortions 2) unexpected memory pressure on the destination host, which may never happen if we delay these VMs to the last.
+        for vm_index in (actives + remote_partials + local_partials):
             vm_state = vms[vm_index].state
             rneeded = 1         # by default, active vm needs 100%
             latency_needed = 0
