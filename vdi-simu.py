@@ -497,7 +497,8 @@ def get_migration_interval(full_migrations, partial_migrations, post_partial_mig
         latency += v[0] * full_migrate
     for k,v in post_partial_migrations.iteritems():
         latency += v[0] * full_migrate
-    migration_interval = math.ceil( float(latency)/interval )     
+    # migration_interval = math.ceil( float(latency)/interval )     
+    migration_interval = 1
     return migration_interval 
 
 def get_reintegration_interval(partial_migrations, full_migrations, post_partial_migrations, resume_migrations):
@@ -598,62 +599,54 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
     slack = float(configs['slack'])
     tightness = float(configs['tightness'])
 
+    # dest queue length. We try to select the migration host that has the shortest queue
+    dest_queue = {}
+    for host in range(nVDIs):
+        if host not in to_migrate and vdi_states[-1][host] == FULL: # make sure the dest host is not a S3 host
+            dest_queue[host] = 0
+
+    vms_copy = []
+    # copy the whole thing to a copy
+    for v in vms:
+        vms_copy.append(vm(v.origin,v.curhost,v.state))
+
     for i in to_migrate:
+        migration_latency = 0   # cumulative migration latency needed. If exceeds, then we stop the migration 
         # for each vm in this vdi to migrate
-        vms_copy = []
-        # copy the whole thing to a copy
-        for v in vms:
-            vms_copy.append(vm(v.origin,v.curhost,v.state))
         for v in range(0, nVMs):
             if vms[v].curhost != i: # all the vms residing in this host
                 continue
             vm_index = v
             vm_state = vms[vm_index].state
             rneeded = 1         # by default, active vm needs 100%
+            latency_needed = 0
             if vm_state == 0:
                 rneeded = idle_vm_consumption
+                latency_needed += partial_migrate
+            else:
+                latency_needed += full_migrate
             dest = -1
-            # look for a dest host to migrate
-            for j in range(0, nVDIs):
-                if j not in to_migrate and vdi_states[-1][j] == FULL: # make sure the dest host is not a S3 host
-                    rconsumed = get_resource_consumed(j, vms_copy)
-                    #print "rconsumed is %f" % rconsumed
-                    if (rconsumed + rneeded) <= tightness*(1+slack)*vms_per_vdi:
-                        dest = j
-                        break
-            
-            if dest == -1:
-                print "Couldn't find dest (This is harmless. Probably because the simulator thought the migration is possible based on the sum of the vdis, but vms are inseparatable units."
-                o ="VDIs to_migrate:"
-                for i in to_migrate:
-                    o += "%d"%i
-                    o += ","
-                print o
-                print "vm_index: %d" % vm_index
-                print "current host:", vms[i].curhost
-                print "vm state: ", vm_state
-                total_resource_needed = 0
-                total_resource_avail = 0
+            # find the destination that 
+            for key in sorted(dest_queue, key=lambda k: dest_queue[k]):
+                host = key
+                queue_length = dest_queue[host]
+                rconsumed = get_resource_consumed(host, vms_copy)
+                if ((rconsumed + rneeded) <= tightness*(1+slack)*vms_per_vdi ) and (queue_length + latency_needed) <= interval:
+                    dest = host
+                    dest_queue[host] += latency_needed
+                    if dest_queue[host] > (migration_latency + latency_needed): # the destination latency is the bottleneck
+                        migration_latency = dest_queue[host] 
+                    else:
+                        migration_latency += latency_needed
+                    break
 
-                for j in range(0, nVDIs):
-                    if j in to_migrate:
-                        print "VDI# %d is in to_migrate"% j
-                        total_resource_needed += get_resource_consumed(j,vms_copy)
-                        continue
-                    if vdi_states[-1][j] != FULL:
-                        print "VDI# %d is not FULL"% j
-                        continue
-                    if j not in to_migrate and vdi_states[-1][j] == FULL: # make sure the dest host is not a S3 host
-                        rconsumed = get_resource_consumed(j,vms_copy)
-                        #print "rconsumed is %f" % rconsumed
-                        print "rconsumed + rneeded = %.1f"%(rconsumed + rneeded)
-                        print "tightness*(1+slack)*vms_per_vdi = %.1f"%(tightness*(1+slack)*vms_per_vdi)
-                        if (rconsumed + rneeded) <= tightness*(1+slack)*vms_per_vdi:
-                            print "found dest: %d" % j
-                        else:
-                            print "VDI# %d does not have enough resources"% j
-                # assert False
+            if dest == -1:
                 return (False,0,0,{},{})
+
+            # if the migration latency has exceeds an interval, then stop dealing with any VMs belonging to this host
+            if migration_latency > interval:
+                break
+
             # update the map
             assert vms_copy[vm_index].curhost != dest
             src = vms_copy[vm_index].curhost
@@ -669,6 +662,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                 else:
                     full_migrations[migration_pair] = [1,str(vm_index)]
             else:
+
                 partial_migrate_times += 1
                 if migration_pair in partial_migrations:
                     cur_migration_times = partial_migrations[migration_pair][0]
@@ -676,15 +670,14 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                     partial_migrations[migration_pair][1] += ("-"+str(vm_index))
                 else:
                     partial_migrations[migration_pair] = [1,str(vm_index)]
-
-    # delete update the vms 
+                
+    # update the vms 
     del vms[:]
     vms = vms_copy[:]
 
     assert len(vms) > 0
-    #assert len(vm_vdi_logs) > 0
     return (True, partial_migrate_times, full_migrate_times,full_migrations,partial_migrations)
-    #print "The end of decide to migrate"
+
 # assume that migratable_servers is sorted in descending order of idleness
 def decide_what_to_migrate(migratable_servers, dest_host_num,  to_migrate, vdi_idleness, vdi_activeness, total_resource_available, s3_flag):
 
@@ -785,14 +778,36 @@ def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
             next_states.append(s)
             c += 1
 
-        # only update the new stats if it is truly migratable
+        # only update the server whose vms have been evacuated
         if truly_migratable:
             for i in to_migrate:
-                next_states[i] = MIGRATING
-        return (next_states, truly_migratable,partial_migrate_times, full_migrate_times, full_migrations, partial_migrations)
+                evacuated = True
+                for v in range(nVMs):
+                    if vms[v].curhost == i:
+                        evacuated = False
+                        break
+                if evacuated:
+                    next_states[i] = MIGRATING
+        return (next_states, truly_migratable, partial_migrate_times, full_migrate_times, full_migrations, partial_migrations)
     else:
         # return the previous setting
         return (vdi_states[-1], False, partial_migrate_times, full_migrate_times, full_migrations, partial_migrations)
+
+def phv(vms_copy=None):
+    global vms
+    if vms_copy == None:
+        vms_copy = vms
+    total_vms = 0
+    print "Host,Current Hosting VMs"
+    hosts = {}
+    for i in range(nVDIs):
+        hosts[i] = 0
+    for i in range(nVMs):
+        hosts[vms_copy[i].curhost] += 1
+    for i in range(nVDIs):
+        print "%d,%d"%(i, hosts[i])
+        total_vms += hosts[i]
+    print "Total VMs in recorded hosts: %d" % total_vms
 
 def get_overall_state(vdi_states):
     state = "full"
