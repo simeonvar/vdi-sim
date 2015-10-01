@@ -328,13 +328,14 @@ def run(inf, outf):
     outf3 = tmp + "-migrations-by-interval.csv"
     outf4 = tmp + "-idle-to-active-transitions-by-interval.csv"
     outf5 = tmp + "-just-go-to-sleep-and-then-wake-up-vdis.csv"
+    outf6 = tmp + "-bounce-reintegrations.csv"
 
     of  = open(outf,"w+")
     of2 = open(outf2,"w+")      # five minute interval results
     of3 = open(outf3,"w+")      # five minute interval results
     of4 = open(outf4, "w+")
     of5 = open(outf5, "w+")
-
+    of6 = open(outf6, "w+")
     # init the of2 heade
     of2_header = "Time, Current Second,"
     for i in range(0, nVDIs):
@@ -351,6 +352,9 @@ def run(inf, outf):
 
     of5_header = "Current Second, VDIs\n"
     of5.write(of5_header)
+
+    of6_header = "Current Second,Source Host, Dest. Host, Migration#, Migration Sequence\n"
+    of6.write(of6_header)
 
     # current VM states in a time interval
     vm_states = []
@@ -417,7 +421,7 @@ def run(inf, outf):
             output_target_timestamp(cur_sec, vdi_states, result_file)
             output_interval(of2, vm_states, vdi_states, cur_sec)
             # Reaching the end of the interval, time to make decision
-            (next_vdi_states, partial_migration_times, full_migration_times, partial_resume_times, full_migrations, partial_migrations, resume_migrations, post_partial_migrations) = make_decision(vm_states, vdi_states, cur_sec, of2, of5)
+            (next_vdi_states, partial_migration_times, full_migration_times, partial_resume_times, full_migrations, partial_migrations, resume_migrations, post_partial_migrations) = make_decision(vm_states, vdi_states, cur_sec, of2, of5, of6)
             (migrate, resume) = check_state(cur_vdi_states, next_vdi_states)
             of2.write("%d,%d,%d,%d,%d"%(len(partial_migrations),len(full_migrations),len(resume_migrations),len(post_partial_migrations),itoactive))
             of2.write("\n")
@@ -1114,8 +1118,25 @@ def nobody_is_migrating(last_states):
             break
     return (not found_migrating)
 
-def decide_to_resume(vdi_states, cur_sec, of2, of5):
+def reintegrate_newly_active_remote_idles(updated_states):
+    global vms 
+    resume_migrations = {}
+    
+    for i in range(nVMs):
+        if vms[i].state > 0 and vms[i].curhost != vms[i].origin and updated_states[vms[i].origin] == FULL: 
+            vm_index = i
+            src = vms[i].curhost
+            dst = vms[i].origin
+            migration_pair = (src, dst)
+            if migration_pair in resume_migrations:
+                resume_migrations[migration_pair][0] += 1
+                resume_migrations[migration_pair][1] += ("-"+str(vm_index))
+            else:
+                resume_migrations[migration_pair] = [1,str(vm_index)]
+            vms[i].curhost = vms[i].origin
+    return resume_migrations
 
+def decide_to_resume(vdi_states, cur_sec, of2, of5, of6):
     global configs, vms
     assert len(vms) == nVMs
 
@@ -1129,8 +1150,15 @@ def decide_to_resume(vdi_states, cur_sec, of2, of5):
     resume_migrations = {}
     post_partial_migrations = {}
     last_states = vdi_states[-1]
+
     # update the vdi last states if one of those are migrating. 
     (last_states, newly_sleep_vdis) = update_last_states(last_states)
+    # if an remote idle VMs becomes active and its origin is still on, then we should reintegrate it immediately 
+    bounce_resume_migrations = reintegrate_newly_active_remote_idles(last_states)
+    if len(bounce_resume_migrations) > 0:
+        for (src,dst) in bounce_resume_migrations:
+            of6.write("%d,%d,%d,%d,%s\n"%(cur_sec,src,dst,bounce_resume_migrations[(src,dst)][0],bounce_resume_migrations[(src,dst)][1]))
+
     vdi_consumption = get_vdi_consumption (vms)
     assert nobody_is_migrating(last_states)
 
@@ -1231,6 +1259,15 @@ def decide_to_resume(vdi_states, cur_sec, of2, of5):
         for i in range(0, nVDIs):
             next_states.append(vdi_states[-1][i])
 
+    # No matter whether we need to resume, we include bounce back migrations in resume migrations
+    if len(bounce_resume_migrations) > 0:
+        for migration_pair in bounce_resume_migrations:
+            if migration_pair not in resume_migrations:
+                resume_migrations[migration_pair] = bounce_resume_migrations[migration_pair]
+            else:
+                resume_migrations[migration_pair][0] += bounce_resume_migrations[migration_pair][0]
+                resume_migrations[migration_pair][1] += ("-" + bounce_resume_migrations[migration_pair][1])
+
     return (next_states, resume, partial_migrate_times, full_migrate_times, partial_resume_times, full_migrations, partial_migrations, resume_migrations, post_partial_migrations)
 
 # return how many idle and active vms will be migrated
@@ -1286,7 +1323,7 @@ def update_last_states(last_states):
     assert len(updated_states) == nVDIs
     return (updated_states,newly_sleep_vdis)
 
-def make_decision(vm_states,vdi_states, cur_sec, of2, of5):
+def make_decision(vm_states,vdi_states, cur_sec, of2, of5, of6):
     global configs,vms
     global migration_interval,reintegration_interval
     global cumulative_interval,cumulative_interval2
@@ -1305,12 +1342,9 @@ def make_decision(vm_states,vdi_states, cur_sec, of2, of5):
 
     if overall_state == "full" or "migrated":
         # update the vdi states first. If there are any servers that are in migrating state, but either switch it to S3 or back to full
-        (next_states, resume, partial_migration_times, full_migration_times, partial_resume_times,full_migrations, partial_migrations, resume_migrations, post_partial_migrations) = decide_to_resume(vdi_states, cur_sec, of2, of5)
+        (next_states, resume, partial_migration_times, full_migration_times, partial_resume_times,full_migrations, partial_migrations, resume_migrations, post_partial_migrations) = decide_to_resume(vdi_states, cur_sec, of2, of5, of6)
         if resume == True:
-            if cur_sec == 26100:
-                print "insert breakpoint here" 
             (nActives, nIdles) = get_reintegrating_vdi_stats(next_states)
-            
             reintegration_interval = get_reintegration_interval(partial_migrations, full_migrations, post_partial_migrations, resume_migrations)
             if reintegration_interval <= 0:
                 print "no migrations happen in this interval: %d. This is weird." % cur_sec
