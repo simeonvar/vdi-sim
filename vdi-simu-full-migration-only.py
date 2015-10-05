@@ -5,7 +5,7 @@ import math
 import linecache, time, numpy
 # a simple simulator program 
 
-target_timestamp = 65400
+target_timestamp = 345600 
 
 SETTING = "./setting.conf"
 DAYS = 7
@@ -23,9 +23,6 @@ S3 = 1
 REINTEGRATING = 3
 
 FULL_MIGRATION_BANDWIDTH = 4.0
-PARTIAL_MIGRATION_BANDWIDTH = FULL_MIGRATION_BANDWIDTH * 0.1
-RESUME_MIGRATION_BANDWIDTH = FULL_MIGRATION_BANDWIDTH * 0.1
-POST_PARTIAL_MIGRATION_BANDWIDTH = FULL_MIGRATION_BANDWIDTH - PARTIAL_MIGRATION_BANDWIDTH
 
 # global variables used in decide_to_migrate
 migration_interval = 0
@@ -79,9 +76,6 @@ parser.optionxform=str
 parser.read(SETTING)
 
 # debug print counts
-print_cnt = 0
-p_print_cnt = 0
-
 for section in parser.sections():
     for option in parser.options(section):
         try:
@@ -102,7 +96,7 @@ low_power =  float(configs['low_power'])
 method = configs['method']
 interval = int(configs['interval'])
 full_migrate = float(configs['full_migrate'])
-partial_migrate = float(configs['partial_migrate'])
+# partial_migrate = float(configs['partial_migrate'])
 s3_suspend = float(configs['s3_suspend'])
 traces_file = configs['traces']
 interval_ahead = int(configs["interval_ahead"])
@@ -501,12 +495,12 @@ def make_migration_schedule(migration_plan):
                 sequence = migration_plan.resume_migrations[(src,dst)][1]
                 for v in sequence.split("-"):
                     vm_index = int(v)
-                    for nSecs in range(int(partial_resume)):
+                    for nSecs in range(int(full_migrate)):
                         schedule[i].append(vm_index)
                         migration_types[i].append("r")
 
         if len(schedule[i]) > interval + 10:
-            print "Warning: Cur sec: %d, destination migration plan (length %d) out of interval"%(migration_plan.cur_sec, len(schedule[i]))
+            print "Warning: Cur sec: %d, migration plan (length %d) out of interval"%(migration_plan.cur_sec, len(schedule[i]))
         #assert len(migration_types[i]) <= interval + 10
 
     assert len(schedule) == nVDIs
@@ -556,12 +550,12 @@ def make_migration_source_schedule(migration_plan):
                 sequence = migration_plan.resume_migrations[(src,dst)][1]
                 for v in sequence.split("-"):
                     vm_index = int(v)
-                    for nSecs in range(int(partial_resume)):
+                    for nSecs in range(int(full_migrate)):
                         schedule[i].append(vm_index)
                         migration_types[i].append("r")
 
         if len(schedule[i]) > interval + 10:
-           print "Warning: Cur sec: %d, source migration plan (length %d) out of interval"%(migration_plan.cur_sec, len(schedule[i]))
+            print "Warning: Cur sec: %d, migration plan (length %d) out of interval"%(migration_plan.cur_sec, len(schedule[i]))
         #assert len(migration_types[i]) <= interval + 10
 
     assert len(schedule) == nVDIs
@@ -608,19 +602,28 @@ def calculate_provision_latency(cur_sec, vm_transitions_to_handle, plan, provisi
                     else:
                         break
                 assert cnt > 0 
-                latency = interval - (timestamp_of_becoming_active%interval) + pos + cnt 
+                latency = cur_sec - timestamp_of_becoming_active + pos + cnt 
             else:
-                latency = 40    # it takes the maximum of 40s to make the source host to be enough for this vm
+                # we have look at the source schedule now 
+                source_queue = source_schedule[oldhost]
+                latency = cur_sec - timestamp_of_becoming_active + len(source_queue)
             provision_latencies.append(latency)
             of.write("%d,%d,%d,%d,%d\n"%(vm, oldhost, timestamp_of_becoming_active, timestamp_of_becoming_active+latency, latency))
     vm_transitions_to_handle.clear()
     for vm in not_handled_yet:
         vm_transitions_to_handle[vm] = not_handled_yet[vm]
-                    
+def get_remote_partial_vms():
+    global vms
+    remote_partials = 0
+    for i in range(nVMs):
+        if vms[i].curhost != vms[i].origin:
+            remote_partials += 1
+    return remote_partials
+                
 def run(inf, outf):
 
     inf = open(inf, "r")
-    tmp = outf
+    tmp = outf+"-full-migrate-only"
     outf = tmp + "-by-second.csv"
     outf2 = tmp + "-by-interval.csv"
     outf3 = tmp + "-migrations-by-interval.csv"
@@ -632,7 +635,6 @@ def run(inf, outf):
     outf9 = tmp + "-migrations-in-%d.csv"%(target_timestamp-interval)
     outf10 = tmp + "-migrations-in-%d.csv"%(target_timestamp+interval)
     outf11 = tmp + "-provision-delays-.csv"
-
     of  = open(outf,"w+")
     of2 = open(outf2,"w+")      # five minute interval results
     of3 = open(outf3,"w+")      # five minute interval results
@@ -755,14 +757,12 @@ def run(inf, outf):
                             host_becomes_overloaded[curhost] = transition_timestamp
                     else:
                         if vms[i].curhost == vms[i].origin:
-                            # for a local idle vms turning into active, then its latency i
-                            #provision_latencies.append(0) 
+                            #provision_latencies.append(0) # for a local idle vms turning into active, then its latency is 0
                             of11.write("%d,%d,%d,%d,%d\n"%(i,curhost,cur_sec,cur_sec,0))
                         else:
-                            # for a remote partial, it is the latency of post partial migration
-                            provision_latencies.append(full_migrate) 
-                            of11.write("%d,%d,%d,%d,%d\n"%(i,curhost,cur_sec,cur_sec+full_migrate,full_migrate))
-                        
+                            provision_latencies.append(full_migrate) # for a remote partial, it is the latency of post partial migration
+                            assert False
+
         if cur_sec % interval == 0 and cur_sec > 0:
             
             if previous_migration_plan.cur_sec - cur_sec <= interval and previous_migration_plan.migration_cause == "consolidation":
@@ -776,15 +776,14 @@ def run(inf, outf):
 
             # update global variable vms state and origin hosts
             itoactive = update_vms(of4, cur_sec, vm_states)
-            remote_partial_vm_into_active += itoactive
+            
             result_file = outf + "-before-%d.csv"%cur_sec
             output_target_timestamp(cur_sec, vdi_states, result_file)
             output_interval(of2, vm_states, vdi_states, cur_sec)
-            if cur_sec == target_timestamp:
-                print "Debug here" 
             # Reaching the end of the interval, time to make decision
             (next_vdi_states, plan) = make_decision(vm_states, vdi_states, cur_sec, of2, of5, of6)
             bandwidth += get_bandwidth(plan)
+            assert get_remote_partial_vms() == 0
             (migrate, resume) = check_state(cur_vdi_states, next_vdi_states)
             of2.write("%d,%d,%d,%d,%d"%(len(plan.partial_migrations),len(plan.full_migrations),len(plan.resume_migrations),len(plan.post_partial_migrations),itoactive))
             of2.write("\n")
@@ -818,6 +817,8 @@ def run(inf, outf):
         total_vdi_activeness_arr.append(vdi_activeness)
 
     inf.close()
+
+    #assert len(vm_transitions_to_handle) == 0
 
     o = ''
     o += "Time,"
@@ -876,8 +877,6 @@ def run(inf, outf):
 def get_migration_interval(full_migrations, partial_migrations, post_partial_migrations):
     
     latency = 0
-    for k,v in partial_migrations.iteritems():
-        latency += v[0] * partial_migrate
     for k,v in full_migrations.iteritems():
         latency += v[0] * full_migrate
     for k,v in post_partial_migrations.iteritems():
@@ -888,8 +887,6 @@ def get_migration_interval(full_migrations, partial_migrations, post_partial_mig
 
 def get_reintegration_interval(partial_migrations, full_migrations, post_partial_migrations, resume_migrations):
     latency = 0
-    for k,v in partial_migrations.iteritems():
-        latency += v[0] * partial_migrate
     for k,v in full_migrations.iteritems():
         latency += v[0] * full_migrate
     for k,v in post_partial_migrations.iteritems():
@@ -1009,7 +1006,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
             latency_needed = 0
             if vm_state == 0:
                 rneeded = idle_vm_consumption
-                latency_needed += partial_migrate
+                latency_needed += full_migrate
             else:
                 latency_needed += full_migrate
             dest = -1
@@ -1043,7 +1040,7 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
 
             migration_pair = (src,dest)
             # We fully migrate the active VMs
-            if vm_state >= 1:
+            if True:
                 vms_copy[vm_index].origin = dest
                 full_migrate_times += 1
                 if migration_pair in full_migrations:
@@ -1051,20 +1048,14 @@ def decide_detailed_migration_plan(to_migrate, vdi_states, vdi_idleness, vdi_act
                     full_migrations[migration_pair][1] += ("-"+str(vm_index))
                 else:
                     full_migrations[migration_pair] = [1,str(vm_index)]
-            else:
-                partial_migrate_times += 1
-                if migration_pair in partial_migrations:
-                    cur_migration_times = partial_migrations[migration_pair][0]
-                    partial_migrations[migration_pair][0] = cur_migration_times + 1
-                    partial_migrations[migration_pair][1] += ("-"+str(vm_index))
-                else:
-                    partial_migrations[migration_pair] = [1,str(vm_index)]
                 
     # update the vms 
     del vms[:]
     vms = vms_copy[:]
 
     assert len(vms) > 0
+    assert len(partial_migrations) == 0 
+    
     return (True, partial_migrate_times, full_migrate_times,full_migrations,partial_migrations)
 
 # assume that migratable_servers is sorted in descending order of idleness
@@ -1132,7 +1123,7 @@ def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
         assert vdi_index >= 0 and vdi_index < nVDIs
         if v.state == 0:
             vdi_idleness[vdi_index] += 1
-            migration_latency_needed[vdi_index] += partial_migrate
+            migration_latency_needed[vdi_index] += full_migrate
         else:
             vdi_activeness[vdi_index] += 1
             migration_latency_needed[vdi_index] += full_migrate
@@ -1269,24 +1260,6 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
     for i in range(nVDIs):
         dest_queue[i] = 0
 
-    # if there is a newly woke-up vdi server, then resume all of its partial replica and see if the problem is solved
-    for i in vdi_set:
-        if last_states[i] == S3:
-            #for v in vms_copy:
-            for j in range(nVMs):
-                v = vms_copy[j]
-                if v.origin == i and dest_queue[v.origin] + partial_resume <= interval:
-                    src = v.curhost
-                    dest = v.origin
-                    record_migration(j, src, dest, reintegrations)
-                    v.curhost = i
-                    dest_queue[i] += partial_resume
-
-    for h in range(nVDIs):
-        if dest_queue[h] > interval:
-            print "Host: %d, queue: %d"%(h, int(dest_queue[h]))
-            assert False
-
     # get the vdi consumption of each vdi
     vdi_consumption = get_vdi_consumption(vms_copy)    
 
@@ -1304,94 +1277,29 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
                 elif v.curhost == i and v.state != 0 and v.origin == i:
                     active_vms.append(v)
                 elif v.curhost == i and v.state == 0 and v.origin != i:
-                    remote_partials_remaining_idle.append(v)
-                elif v.curhost == i and v.state != 0 and v.origin != i: # remote partials that become active
-                    # find dest.
-                    for k in vdi_set:
-                        if i == k:
-                            continue
-                        else:
-                            vm_consumption = 1                   # it is active
-                            if vdi_consumption[k] + vm_consumption <= vdi_capacity and dest_queue[k] + full_migrate <= interval and dest_queue[v.curhost] + partial_migrate <= interval and dest_queue[v.origin] + full_migrate <= interval:
-                                record_migration(j, v.curhost, k, partial_migrations)
-                                vms_copy[j].curhost = k
-                                dest_queue[k] += full_migrate
-                                assert dest_queue[k] <= interval
-                                dest_queue[v.origin] += full_migrate
-                                assert dest_queue[v.origin] <= interval
-                                record_migration(j, v.origin, k, post_partial_migrations)
-                                vms_copy[j].origin = k # !!! update its origin, do post-partial migrations! 
-                                vdi_consumption[k] += vm_consumption
-                                vdi_consumption[i] -= vm_consumption
-                                dest_queue[i] += partial_migrate
-                                assert dest_queue[i] <= interval
-
-                                break
-                    else:
-                        # meaning we have not found k that hosts the v
-                        allocatable = False
-                        return (allocatable, {}, {}, {}, {})
-                    # here means the loop has found k, then test whether there is still overloaded vdis
-                    if vdi_consumption[i] <= target_capacity:
-                        break
-            for h in range(nVDIs):
-                if dest_queue[h] > interval:
-                    print "Host: %d, queue: %d"%(h, int(dest_queue[h]))
+                    print "There should not be any remote vms. Something wrong here" 
                     assert False
 
             # check if we need to adjust the target_capacity
             consumption_diff = vdi_consumption[i] - target_capacity
             time_left = interval - dest_queue[i]
             max_space_to_make = 0
-            total_number_of_remote_idle_vms =  len(remote_partials_remaining_idle)
-            if time_left > total_number_of_remote_idle_vms * partial_migrate:
-                time_left -= total_number_of_remote_idle_vms * partial_migrate
-                max_space_to_make += idle_vm_consumption * total_number_of_remote_idle_vms
-                max_full_vms_to_evict = int(float(time_left)/full_migrate)
-                max_space_to_make += 1 * max_full_vms_to_evict
-                if max_full_vms_to_evict > len(active_vms):
-                    time_left -= len(active_vms) * full_migrate 
-                    rest_idle_vms = int(float(time_left)/partial_migrate)
-                    max_space_to_make += idle_vm_consumption * rest_idle_vms                    
+            total_number_of_idle_vms = len(local_idle_vms) + len(remote_partials_remaining_idle)
+            total_number_of_active_vms = len(active_vms)
+            if time_left > total_number_of_active_vms * full_migrate:
+                time_left -= total_number_of_active_vms * full_migrate
+                max_space_to_make += total_number_of_active_vms
+                max_idle_vms_to_evict = int(float(time_left)/full_migrate)
+                max_space_to_make += (max_idle_vms_to_evict * idle_vm_consumption)
             else:
-                max_idle_vms_to_evict = int(float(time_left)/partial_migrate)
-                max_space_to_make += idle_vm_consumption * max_idle_vms_to_evict
+                max_active_vms_to_evict = int(float(time_left)/full_migrate)
+                max_space_to_make += max_active_vms_to_evict
                 
             if max_space_to_make < consumption_diff:
-                target_capacity = vdi_consumption[i] - max_space_to_make
+                target_capacity = vdi_consumption[i] - max_space_to_make 
 
             if vdi_consumption[i] > target_capacity:
-                # now to kick out the remote partials vms that remain idle
-                for v in remote_partials_remaining_idle:
-                    vm_index = vms_copy.index(v)
-                    # find dest.
-                    for k in vdi_set:
-                        if i == k:
-                            continue
-                        else:
-                            # see if it fits
-                            if vdi_consumption[k] + idle_vm_consumption <= vdi_capacity and dest_queue[k] + partial_migrate <= interval and dest_queue[v.curhost] + partial_migrate <= interval:
-                                record_migration(vm_index, v.curhost, k, partial_migrations)
-                                vms_copy[vm_index].curhost = k
-                                dest_queue[k] += partial_migrate
-                                dest_queue[v.curhost] += partial_migrate
-                                vdi_consumption[k] += idle_vm_consumption
-                                vdi_consumption[i] -= idle_vm_consumption
-
-                                for h in range(nVDIs):
-                                    assert dest_queue[h] <= interval
-
-                                break
-                    else:
-                        # meaning we have not found k that hosts the v
-                        allocatable = False
-                        return (allocatable, {}, {}, {}, {})
-                    # here means the loop has found k, then test whether there is still overloaded vdis
-                    if vdi_consumption[i] <= target_capacity:
-                        break
-
-            if vdi_consumption[i] > target_capacity:
-                # now to kick out the active vms
+                 # now to kick out the active vms
                 for v in active_vms:
                     vm_index = vms_copy.index(v)
                     # find dest.
@@ -1408,15 +1316,16 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
                                 vms_copy[vm_index].origin = k
                                 vdi_consumption[k] += 1
                                 vdi_consumption[i] -= 1
-
-                                for h in range(nVDIs):
-                                    assert dest_queue[h] <= interval
-
                                 break
                     else:
-                        # meaning we have not found k that hosts the v
-                        allocatable = False
-                        return (allocatable, {}, {}, {}, {})
+                        # only return when we can't fit into the schedule any more
+                        if dest_queue[i] + full_migrate > interval:
+                            allocatable = True
+                            return (allocatable, partial_migrations, reintegrations, full_migrations, post_partial_migrations)
+                        else:
+                            # meaning we have not found k that hosts the v
+                            allocatable = False
+                            return (allocatable, {}, {}, {}, {})
                     # here means the loop has found k, then test whether there is still overloaded vdis
                     if vdi_consumption[i] <= target_capacity:
                         break
@@ -1431,22 +1340,24 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
                             continue
                         else:
                             # see if it fits
-                            if vdi_consumption[k] + idle_vm_consumption <= vdi_capacity and dest_queue[v.curhost] + partial_migrate <= interval and dest_queue[k] + partial_migrate <= interval:
-                                record_migration(vm_index, v.curhost, k, partial_migrations)
+                            if vdi_consumption[k] + idle_vm_consumption <= vdi_capacity and dest_queue[k] + full_migrate <= interval and dest_queue[v.curhost] + full_migrate <= interval:
+                                record_migration(vm_index, v.curhost, k, full_migrations)
                                 vms_copy[vm_index].curhost = k
-                                dest_queue[k] += partial_migrate
-                                dest_queue[v.curhost] += partial_migrate
-                                
-                                for h in range(nVDIs):
-                                    assert dest_queue[h] <= interval
-
+                                vms_copy[vm_index].origin = k
+                                dest_queue[k] += full_migrate
+                                dest_queue[v.curhost] += full_migrate
                                 vdi_consumption[k] += idle_vm_consumption
                                 vdi_consumption[i] -= idle_vm_consumption
                                 break
                     else:
-                        # meaning we have not found k that hosts the v
-                        allocatable = False
-                        return (allocatable, {}, {}, {}, {})
+                        # only return when we can't fit into the schedule any more
+                        if dest_queue[i] + full_migrate > interval:
+                            allocatable = True
+                            return (allocatable, partial_migrations, reintegrations, full_migrations, post_partial_migrations)
+                        else:
+                            # meaning we have not found k that hosts the v
+                            allocatable = False
+                            return (allocatable, {}, {}, {}, {})
                     # here means the loop has found k, then test whether there is still overloaded vdis
                     if vdi_consumption[i] <= target_capacity:
                         break
@@ -1457,6 +1368,7 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
     else:                       
         # loop exits normally, then
         allocatable = True
+
     for i in range(nVDIs):
         assert dest_queue[i] <= interval 
 
@@ -1570,10 +1482,8 @@ def reintegrate_newly_active_remote_idles(updated_states):
                 resume_migrations[migration_pair][1] += ("-"+str(vm_index))
             else:
                 resume_migrations[migration_pair] = [1,str(vm_index)]
-            #vms[i].curhost = vms[i].origin
-
-    #return resume_migrations
-    return {}
+            vms[i].curhost = vms[i].origin
+    return resume_migrations
 
 def decide_to_resume(vdi_states, cur_sec, of2, of5, of6):
     global configs, vms
@@ -1592,11 +1502,6 @@ def decide_to_resume(vdi_states, cur_sec, of2, of5, of6):
 
     # update the vdi last states if one of those are migrating. 
     (last_states, newly_sleep_vdis) = update_last_states(last_states)
-    # if an remote idle VMs becomes active and its origin is still on, then we should reintegrate it immediately 
-    bounce_resume_migrations = reintegrate_newly_active_remote_idles(last_states)
-    if len(bounce_resume_migrations) > 0:
-        for (src,dst) in bounce_resume_migrations:
-            of6.write("%d,%d,%d,%d,%s\n"%(cur_sec,src,dst,bounce_resume_migrations[(src,dst)][0],bounce_resume_migrations[(src,dst)][1]))
 
     vdi_consumption = get_vdi_consumption (vms)
     assert nobody_is_migrating(last_states)
@@ -1667,6 +1572,7 @@ def decide_to_resume(vdi_states, cur_sec, of2, of5, of6):
                 for v in vms:
                     vms_copy.append(vm(v.origin,v.curhost,v.state))
                 (allocatable, partial_migrations, resume_migrations, full_migrations, post_partial_migrations) = try_to_allocate(vdi_set, vms_copy, last_states)
+
                 if allocatable:
                     del vms[:]
                     vms = vms_copy[:]
@@ -1696,14 +1602,9 @@ def decide_to_resume(vdi_states, cur_sec, of2, of5, of6):
         for i in range(0, nVDIs):
             next_states.append(vdi_states[-1][i])
 
-    # No matter whether we need to resume, we include bounce back migrations in resume migrations
-    if len(bounce_resume_migrations) > 0:
-       for migration_pair in bounce_resume_migrations:
-           if migration_pair not in resume_migrations:
-               resume_migrations[migration_pair] = bounce_resume_migrations[migration_pair]
-           else:
-               resume_migrations[migration_pair][0] += bounce_resume_migrations[migration_pair][0]
-               resume_migrations[migration_pair][1] += ("-" + bounce_resume_migrations[migration_pair][1])
+    assert len(partial_migrations) == 0
+    assert len(resume_migrations) == 0
+    assert len(post_partial_migrations) == 0
 
     return (next_states, resume, partial_migrate_times, full_migrate_times, partial_resume_times, full_migrations, partial_migrations, resume_migrations, post_partial_migrations)
 
@@ -1788,8 +1689,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2, of5, of6):
             reintegration_interval = get_reintegration_interval(partial_migrations, full_migrations, post_partial_migrations, resume_migrations)
             if reintegration_interval <= 0:
                 print "no migrations happen in this interval: %d. This is weird." % cur_sec
-                #assert False
-
+                assert False
             cumulative_interval2 = 0
         else:
             # decide to whether to migrate again
@@ -1874,7 +1774,7 @@ if __name__ == '__main__':
     
     if policy_type == "static":
         timestr = time.strftime("%Y-%m-%d-%H-%M-%S")        
-        of = "data/static-all-result-"+timestr+".csv"
+        of = "data/static-all-result-"+timestr+"-full-migration-only.csv"
         f = open(of, "w+")
         header =  "Idle threshold, Resume threshold(aVM#), Slack Threshold,"
         header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd), Partial Migration#, Partial Resume#, Full Migration#, Partial idle VM# turning into Active, Bandwidth(GB), Average Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s)\n"

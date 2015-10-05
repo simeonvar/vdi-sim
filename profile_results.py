@@ -85,8 +85,8 @@ mergedlist = remotePartials_a + localPartials_a
 print "Max of all: %d" % max(mergedlist)
 print "Standard Deviation of all: %d" % np.std(mergedlist)
 
-#data = localPartials_a
-data = remotePartials_a
+data = localPartials_a
+#data = remotePartials_a
 sorted_data = np.sort(data)
 yvals=np.arange(len(sorted_data))/float(len(sorted_data))
 plt.plot(sorted_data,yvals)
