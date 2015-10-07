@@ -652,8 +652,8 @@ def assert_states(cur_sec, next_vdi_states, vms_copy):
     for i in range(nVMs):
         v = vms_copy[i]
         if next_vdi_states[v.curhost] == S3:
-            print "Cur sec: ", cur_sec, " vm index is ", i, " but its host ", v.curhost, " is asleep"
-            assert False 
+            print "WARNING: Cur sec: ", cur_sec, " vm index is ", i, " but its host ", v.curhost, " is asleep"
+            #assert False 
 
 def run(inf, outf):
 
@@ -806,6 +806,7 @@ def run(inf, outf):
                 pvs(vdi_states)
                 #assert False
         if cur_sec % interval == 0 and cur_sec > 0:
+            print cur_sec 
             prev_partial_vms = print_partial_vm_number()
             
             if previous_migration_plan.cur_sec - cur_sec <= interval and previous_migration_plan.migration_cause == "consolidation":
@@ -843,15 +844,12 @@ def run(inf, outf):
             migration_times += plan.partial_migration_times
             resume_times += plan.resume_migration_times
 
-            if prev_partial_vms - resume_times != updated_partial_vms:
+            if resume_times > migration_times:
                 print "prev_partial_vms ", prev_partial_vms
                 print "resume_times ", resume_times
                 print "updated_partial_vms", updated_partial_vms
                 print "migration_times: ", migration_times
                 print "Cur_sec: %d, prev_partial_vms - resume_times != updated_partial_vms\n" % cur_sec
-                #assert False
-
-            if resume_times > migration_times:
                 print "Cur_sec: %d, resume_times > migration_times" % cur_sec
                 assert False
             total_full_migration_times += plan.full_migration_times
@@ -2011,9 +2009,7 @@ def run_experiment(inputs, output_str):
     ave_full_migration_times = fmt/cnt
     ave_rpva = rpva /cnt
     ave_bw = float(tbw)/cnt
-    return (ave_saving, ave_consolidated_secs,\
-            ave_active_vm_on_consolidated_secs, ave_active_vm_secs,\
-            ave_migration_times, ave_resume_times, ave_full_migration_times, ave_rpva, ave_bw, apl, stdpl, maxpl)
+    return (ave_saving, ave_bw, apl, stdpl, maxpl)
 
 if __name__ == '__main__':
 
@@ -2024,15 +2020,12 @@ if __name__ == '__main__':
         of = "data/static-all-result-"+timestr+".csv"
         f = open(of, "w+")
         header =  "Idle threshold, Resume threshold(aVM#), Slack Threshold,"
-        header += "Power Saving(wd), Consol.Time(wd), Active Consol. VMs Time(wd), Ttl.Active.Time(wd), Partial Migration#, Partial Resume#, Full Migration#, Partial idle VM# turning into Active, Bandwidth(GB), Average Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s)\n"
+        header += "Power Saving(wd),Bandwidth(GB), Average Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s)\n"
 
         f.write(header)
-        rts = configs['resume_thresholds'].rstrip().split(",")
-        its = configs['idle_thresholds'].rstrip().split(",")
         sts = configs['slacks'].rstrip().split(",")
-        tts = configs['tightnesses'].rstrip().split(",")
         i = 0 
-        for i in range(0, len(rts)):
+        for i in range(0, len(sts)):
             configs['resume_threshold'] = int(rts[i])
             configs['idle_threshold'] = float(its[i])
             configs['slack'] = float(sts[i])
@@ -2045,13 +2038,9 @@ if __name__ == '__main__':
             dayofweek = "weekday"
             inputs = configs["inputs-weekday"]
             output_postfix = timestr + ".out-static-%.1f-%.1f-%.1f"%(float(its[i]), float(sts[i]), float(tts[i]))
-            (ave_weekday_saving, ave_weekday_consolidated_secs, \
-             ave_weekday_active_vm_on_consolidated_secs,ave_weekday_active_vm_secs,\
-             ave_weekday_migration_times, ave_weekday_resume_times, ave_full_migration_times, ave_remote_partial_to_actives, ave_bw, apl, stdpl, maxpl) = run_experiment(inputs, output_postfix)
-            oline = "%.1f,%d,"%(configs['idle_threshold'],configs['resume_threshold'])
+            (ave_weekday_saving, ave_bw, apl, stdpl, maxpl) = run_experiment(inputs, output_postfix)
             oline += "%.1f,"%(1-configs['tightness'])
-
-            oline += "%f, %d, %d, %d, %d, %d, %d, %d, %.1f, %.1f, %.1f,%.1f\n"% (ave_weekday_saving, ave_weekday_consolidated_secs/3600, ave_weekday_active_vm_on_consolidated_secs/3600,ave_weekday_active_vm_secs/3600,ave_weekday_migration_times,ave_weekday_resume_times, ave_full_migration_times, ave_remote_partial_to_actives, ave_bw, apl, stdpl, maxpl)
+            oline += "%.1f,%.1f, %.1f, %.1f,%.1f\n"% (ave_weekday_saving, ave_bw, apl, stdpl, maxpl)
             f.write(oline)
             
         f.close()
