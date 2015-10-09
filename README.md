@@ -79,3 +79,12 @@ Algorithm:
 Assumption: 
 1. Every VDI server has the same capacity slack
 2. Hypervisor supports swapping. 
+
+The post-partial migration tuple (src, dest) is transfering from (origin, curhost), so the vm's origin will be changed to curhost. 
+
+I decided to use the existing nested api to make it easy to change my code.
+
+The complexity with the heavy policy thing is to make sure the result is 100% correct. We make a schedule once at the beginning of the interval, then we execute that schedule throughout the interval.  
+
+So the decide_to_migrate and decide_to_resume need to handle the remote partial vms becoming active. This logic goes like this:
+if the remote VM turning into active has enough resource in the current host, and its host and origin has enough bandwidth, then we reintegrat it immediately. i.e., we update the bandwidth, otherwise, we wait for the make_decision to make schedule for the next round.    

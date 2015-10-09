@@ -751,7 +751,8 @@ def run(inf, outf):
                             else:
                                 total_consumption += 1
                     if total_consumption > vms_per_vdi: # exceeding the destination hosts
-                        vm_transitions_to_handle[i] = [cur_sec, curhost]
+                        if i not in vm_transitions_to_handle:
+                            vm_transitions_to_handle[i] = [cur_sec, curhost]
                         if curhost not in host_becomes_overloaded:
                             transition_timestamp = cur_sec % interval 
                             host_becomes_overloaded[curhost] = transition_timestamp
@@ -781,7 +782,7 @@ def run(inf, outf):
             output_target_timestamp(cur_sec, vdi_states, result_file)
             output_interval(of2, vm_states, vdi_states, cur_sec)
             # Reaching the end of the interval, time to make decision
-            (next_vdi_states, plan) = make_decision(vm_states, vdi_states, cur_sec, of2, of5, of6)
+            (next_vdi_states, plan) = make_decision_full_migration_only(vm_states, vdi_states, cur_sec, of2, of5, of6)
             bandwidth += get_bandwidth(plan)
             assert get_remote_partial_vms() == 0
             (migrate, resume) = check_state(cur_vdi_states, next_vdi_states)
@@ -1095,7 +1096,7 @@ def debug_print(vdi_states, vdi_idleness, vdi_activeness, cur_sec):
 
 # s3_flag means whether there are already consolidated host,
 # if true, then we use vms
-def decide_to_migrate(vdi_states, cur_sec, s3_flag, of2):
+def decide_to_migrate_full_migration_only(vdi_states, cur_sec, s3_flag, of2):
 
     # get idleness
     vdi_idleness = {}
@@ -1485,7 +1486,7 @@ def reintegrate_newly_active_remote_idles(updated_states):
             vms[i].curhost = vms[i].origin
     return resume_migrations
 
-def decide_to_resume(vdi_states, cur_sec, of2, of5, of6):
+def decide_to_resume_full_migration_only(vdi_states, cur_sec, of2, of5, of6):
     global configs, vms
     assert len(vms) == nVMs
 
@@ -1661,7 +1662,7 @@ def update_last_states(last_states):
     assert len(updated_states) == nVDIs
     return (updated_states,newly_sleep_vdis)
 
-def make_decision(vm_states,vdi_states, cur_sec, of2, of5, of6):
+def make_decision_full_migration_only(vm_states,vdi_states, cur_sec, of2, of5, of6):
     global configs,vms
     global migration_interval,reintegration_interval
     global cumulative_interval,cumulative_interval2
@@ -1682,7 +1683,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2, of5, of6):
 
     if overall_state == "full" or "migrated":
         # update the vdi states first. If there are any servers that are in migrating state, but either switch it to S3 or back to full
-        (next_states, resume, partial_migration_times, full_migration_times, partial_resume_times,full_migrations, partial_migrations, resume_migrations, post_partial_migrations) = decide_to_resume(vdi_states, cur_sec, of2, of5, of6)
+        (next_states, resume, partial_migration_times, full_migration_times, partial_resume_times,full_migrations, partial_migrations, resume_migrations, post_partial_migrations) = decide_to_resume_full_migration_only(vdi_states, cur_sec, of2, of5, of6)
         if resume == True:
             migration_cause = "Resume"
             (nActives, nIdles) = get_reintegrating_vdi_stats(next_states)
@@ -1693,7 +1694,7 @@ def make_decision(vm_states,vdi_states, cur_sec, of2, of5, of6):
             cumulative_interval2 = 0
         else:
             # decide to whether to migrate again
-            (next_states, decision, partial_migration_times, full_migration_times,full_migrations, partial_migrations) = decide_to_migrate(vdi_states, cur_sec, True, of2)
+            (next_states, decision, partial_migration_times, full_migration_times,full_migrations, partial_migrations) = decide_to_migrate_full_migration_only(vdi_states, cur_sec, True, of2)
             if decision == True:
                 migration_cause = "consolidation" 
                 (nActives, nIdles) = get_migrating_vdi_stats(next_states)
@@ -1721,7 +1722,8 @@ def make_decision(vm_states,vdi_states, cur_sec, of2, of5, of6):
     plan.post_partial_migrations = post_partial_migrations
     plan.partial_migrations = partial_migrations
     plan.resume_migrations = resume_migrations
-
+    assert len(post_partial_migrations) == 0
+    assert len(partial_migrations) == 0
     return (next_states,plan)
 
 def run_experiment(inputs, output_str):
