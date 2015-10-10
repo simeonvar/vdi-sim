@@ -134,7 +134,7 @@ for section in parser.sections():
         # print "Parser >>> ... ", option,value,type(value)
 
 # policy parameters
-nVMs = int(configs['nVMs'])
+nVMs = 200
 nVDIs = int(configs['nVDIs'])
 vms_per_vdi = nVMs / nVDIs
 idle_vm_consumption = float(configs['idle_vm_consumption'])
@@ -195,7 +195,7 @@ def update_vms(of4, cur_sec, vm_states):
     # clear prev_vms
     del prev_vms[:]
     prev_vms = []
-    (h,m,sec) = format_cur_time(cur_sec)
+    #(h,m,sec) = format_cur_time(cur_sec)
     for i in range(0, nVMs):
         v = vms[i]
         prev_vms.append(vm(v.origin,v.curhost,v.state))
@@ -1059,7 +1059,7 @@ def run(inf, outf):
     print "Done. Result is stored in %s" % outf
     # print "Total active seconds: %d" % a1
 
-    return (power_saving, total_low_power_time, vm_active_vdi_migrated_secs, active_secs, migration_times, resume_times, total_full_migration_times, remote_partial_vm_into_active, bandwidth, provision_latencies)
+    return (power_saving, bandwidth, provision_latencies)
 
 def get_migration_interval(full_migrations, partial_migrations, post_partial_migrations):
     
@@ -1157,7 +1157,7 @@ def decide_detailed_migration_plan(to_migrate, last_states, vdi_idleness, vdi_ac
     global configs
     global vms
     global vm_vdi_logs
-    nVMs = int(configs['nVMs'])
+    global nVMs 
     nVDIs = int(configs['nVDIs'])
     vms_per_vdi = nVMs / nVDIs
 
@@ -1430,10 +1430,10 @@ def record_vm_states(vm_states):
         # init it first
         for i in vm_states:
             vm_states_before_migration.append(i)
-    c = 0
-    for i in vm_states:
-        vm_states_before_migration[c] = i
-        c += 1
+#     c = 0
+#     for i in vm_states:
+#         vm_states_before_migration[c] = i
+#         c += 1
 
 def find_available_slots(host_schedule, length):
     slots = []
@@ -2126,13 +2126,6 @@ def update_migration_times(migration_plan):
 def run_experiment(inputs, output_str):
     cnt = 0
     tsaving = 0.0
-    tcsecs = 0
-    tacsecs = 0
-    tasecs = 0
-    tmt = 0
-    trt = 0
-    fmt = 0
-    rpva = 0
     tbw = 0 
     apl = 0
     stdpl = 0 
@@ -2140,28 +2133,14 @@ def run_experiment(inputs, output_str):
     for inf in inputs.rstrip().split(","):
         if inf != '':
             outf = inf+output_str
-            (saving, csecs, tactive_con_secs, tactive_secs, migration_times, resume_times, full_migrate_times, remote_partial_vm_to_active, bandwidth, provision_latencies)  = run(inf,outf)
+            (saving, bandwidth, provision_latencies)  = run(inf,outf)
             tsaving += saving
-            tcsecs += csecs
-            tacsecs += tactive_con_secs
-            tasecs += tactive_secs
-            tmt += migration_times
-            trt += resume_times
             cnt += 1
-            fmt += full_migrate_times
-            rpva += remote_partial_vm_to_active
             tbw += bandwidth
             apl = sum(provision_latencies)/len(provision_latencies)
             stdpl = numpy.std(provision_latencies)
             maxpl = max(provision_latencies)
     ave_saving = tsaving / cnt 
-    ave_consolidated_secs = tcsecs / cnt
-    ave_active_vm_on_consolidated_secs = tacsecs / cnt
-    ave_active_vm_secs = tasecs / cnt
-    ave_migration_times = tmt / cnt
-    ave_resume_times = trt /cnt
-    ave_full_migration_times = fmt/cnt
-    ave_rpva = rpva /cnt
     ave_bw = float(tbw)/cnt
     return (ave_saving, ave_bw, apl, stdpl, maxpl)
 
@@ -2173,30 +2152,33 @@ if __name__ == '__main__':
         timestr = time.strftime("%Y-%m-%d-%H-%M-%S")        
         of = "data/static-all-result-"+timestr+".csv"
         f = open(of, "w+")
-        header =  "Slack Threshold,Power Saving(wd),Bandwidth(GB), Average Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s)\n"
+        header =  "Users,Slack Threshold,Power Saving(wd),Bandwidth(GB), Average Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s)\n"
         f.write(header)
         
         sts = configs['slacks'].rstrip().split(",")
         tts = configs['tightnesses'].rstrip().split(",")
         for i in range(0, len(tts)):
-            #configs['resume_threshold'] = int(rts[i])
-            #configs['idle_threshold'] = float(its[i])
-            print tts[i]
             configs['slack'] = float(sts[i])
             configs['tightness'] = float(tts[i])
             configs["dayofweek"] = "weekday"
-            #resume_threshold = int(rts[i])
-            #idle_threshold = float(its[i])
             slack = float(sts[i])
             tightness = float(tts[i])
             dayofweek = "weekday"
-            inputs = configs["inputs-weekday"]
-            output_postfix = timestr + ".slack-%.1f"%(1-float(tts[i]))
-            (ave_weekday_saving, ave_bw, apl, stdpl, maxpl) = run_experiment(inputs, output_postfix)
-            oline = "%.1f,"%(1-configs['tightness'])
-            oline += "%f,%.1f, %.1f, %.1f,%.1f\n"% (ave_weekday_saving, ave_bw, apl, stdpl, maxpl)
-            f.write(oline)
-            
+            input_file = configs["inputs-weekday"]
+            experiment_users =  configs['nVMs']
+            for users in experiment_users.split(","):
+                # update the global variables
+                nVMs = int(users)
+                vms_per_vdi = nVMs / nVDIs
+                print "nVMs=", nVMs
+                output_file = input_file+ ("-%d-users"%nVMs) + timestr + ".slack-%.1f"%(1-float(tts[i]))
+                (saving, bandwidth, provision_latencies) = run(input_file, output_file)
+                apl = sum(provision_latencies)/len(provision_latencies)
+                stdpl = numpy.std(provision_latencies)
+                maxpl = max(provision_latencies)
+                oline = "%d,%.1f,"%(nVMs, 1-configs['tightness'])
+                oline += "%f,%.1f, %.1f, %.1f,%.1f\n"% (saving, bandwidth, apl, stdpl, maxpl)
+                f.write(oline)
         f.close()
         print "Done. Result is in %s"%of
 
