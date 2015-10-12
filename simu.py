@@ -846,6 +846,7 @@ def run(inf, outf):
     bandwidth = 0 
     vm_transitions_to_handle = {}
     provision_latencies = []
+    the_rest_latencies = []
     total_itoactive = 0
     total_itoactive2 = 0
     for i in range(nVDIs):
@@ -907,18 +908,19 @@ def run(inf, outf):
                     if i not in vms_turning_into_active_schedule:
                         vms_turning_into_active_schedule[i] = transition_timestamp
                         total_itoactive += 1
-                        total_itoactive2 += 1
                         if total_consumption > vms_per_vdi: # exceeding the destination hosts
                             waiting_vm = Waiting_VM(i,0,cur_sec,curhost)
                             vm_transitions_to_handle[curhost].put(waiting_vm)
                         else:
                             if vms[i].curhost == vms[i].origin:
                                 # for a local idle vms turning into active, then its latency i
-                                #provision_latencies.append(0) 
+                                #provision_latencies.append(0)
+                                the_rest_latencies.append(0) 
                                 of11.write("%d,%d,%d,%d,%d\n"%(i,curhost,cur_sec,cur_sec,0))
                             else:
                                 # for a remote partial, it is the latency of post partial migration
-                                #provision_latencies.append(full_migrate) 
+                                provision_latencies.append(full_migrate)
+                                #the_rest_latencies.append(full_migrate)  
                                 of11.write("%d,%d,%d,%d,%d\n"%(i,curhost,cur_sec,cur_sec+full_migrate,full_migrate))
                                 
         if cur_sec == target_timestamp:
@@ -957,6 +959,14 @@ def run(inf, outf):
             assert_states(cur_sec, next_vdi_states, vms)
 
             bandwidth += get_bandwidth(plan)
+
+            if method == "full":
+                partial_vms = print_partial_vm_number(vms)
+                assert partial_vms == 0
+                
+                assert len(plan.partial_migrations) == 0
+                assert len(plan.post_partial_migrations) == 0
+                assert len(plan.resume_migrations) == 0
 
             #(migrate, resume) = check_state(cur_vdi_states, next_vdi_states)
 
@@ -1059,7 +1069,7 @@ def run(inf, outf):
     print "Done. Result is stored in %s" % outf
     # print "Total active seconds: %d" % a1
 
-    return (power_saving, bandwidth, provision_latencies)
+    return (power_saving, bandwidth, provision_latencies, the_rest_latencies)
 
 def get_migration_interval(full_migrations, partial_migrations, post_partial_migrations):
     
@@ -1192,8 +1202,8 @@ def decide_detailed_migration_plan(to_migrate, last_states, vdi_idleness, vdi_ac
             rneeded = 1         # by default, active vm needs 100%
             latency_needed = 0
             
-            if method == "oasis":
-                post_partial_migration_needed_for_dest = 0 
+            post_partial_migration_needed_for_dest = 0 
+            if method == "oasis":                
                 if vms_copy[vm_index].curhost != vms_copy[vm_index].origin:
                     rneeded = idle_vm_consumption
                     latency_needed += partial_migrate
@@ -1558,7 +1568,7 @@ def try_to_allocate_full_migration_only(vdi_set, vms_copy, last_states):
 
     for i in vdi_set:
         target_capacity = vdi_capacity
-        while vdi_consumption[i] > target_capacity and interval - dest_queue[i] >= partial_migrate:
+        while vdi_consumption[i] > target_capacity:
             # try to kick out the remote idle vms first
             local_idle_vms = []
             active_vms = []   
@@ -1571,7 +1581,7 @@ def try_to_allocate_full_migration_only(vdi_set, vms_copy, last_states):
 
             if vdi_consumption[i] > target_capacity:
                 # now to kick out the active vms
-                for v in active_vms + local_idle_vms:
+                for v in local_idle_vms + active_vms:
                     vm_index = v
                     # find dest.
                     for k in vdi_set:
@@ -1743,7 +1753,7 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
             consumption_diff = vdi_consumption[i]  - target_capacity
             if max_space_to_make < consumption_diff:
                 target_capacity = vdi_consumption[i] - max_space_to_make
-
+            
             if vdi_consumption[i] > target_capacity:
                 # now to kick out the remote partials vms that remain idle
                 for v in remote_partials_remaining_idle + local_idle_vms:
@@ -1778,8 +1788,7 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
                     
             available_slots = find_available_slots(migration_schedule[i], full_migrate)
             if len(available_slots) == 0:
-                target_capacity = vdi_consumption[i]
-            
+                target_capacity = vdi_consumption[i]            
             if vdi_consumption[i] > target_capacity:
                 # now to kick out the active vms
                 for v in active_vms:
@@ -1813,6 +1822,8 @@ def try_to_allocate(vdi_set, vms_copy, last_states):
                     # here means the loop has found k, then test whether there is still overloaded vdis
                     if vdi_consumption[i] <= target_capacity:
                         break
+
+            
                 else:
                     print "This is unlikely because evacuating all active VMs should make vdi_consumption never exceed the vdi capacity"
                     assert False
@@ -2251,7 +2262,7 @@ def run_experiment(inputs, output_str):
             tsaving += saving
             cnt += 1
             tbw += bandwidth
-            apl = sum(provision_latencies)/len(provision_latencies)
+            apl = numpy.median(provision_latencies)
             stdpl = numpy.std(provision_latencies)
             maxpl = max(provision_latencies)
     ave_saving = tsaving / cnt 
@@ -2266,7 +2277,7 @@ if __name__ == '__main__':
         timestr = time.strftime("%Y-%m-%d-%H-%M-%S")        
         of = "data/static-all-result-"+timestr+".csv"
         f = open(of, "w+")
-        header =  "Users,Slack Threshold,Power Saving(wd),Bandwidth(GB), Average Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s)\n"
+        header =  "Users,Slack Threshold,Power Saving(wd),Bandwidth(GB), Average Provision Latency(s), Mean Provision Latency(s), Provision Latency Standard Deviaion(s), Max Provision Latency(s), Provision Latency Count, All Transition Counts, Average Provision Latency(s), Median Provision Latency(s)\n"
         f.write(header)
         
         sts = configs['slacks'].rstrip().split(",")
@@ -2280,19 +2291,30 @@ if __name__ == '__main__':
             dayofweek = "weekday"
             input_file = configs["inputs-weekday"]
             experiment_users = str(configs['nVMs'])
+            # output the latency
             for users in experiment_users.split(","):
                 # update the global variables
                 nVMs = int(users)
                 vms_per_vdi = nVMs / nVDIs
                 print "nVMs=", nVMs
                 output_file = input_file+ ("-%d-users"%nVMs) + timestr + ".slack-%.1f"%(1-float(tts[i]))
-                (saving, bandwidth, provision_latencies) = run(input_file, output_file)
-                apl = sum(provision_latencies)/len(provision_latencies)
+                (saving, bandwidth, provision_latencies, the_rest_latencices) = run(input_file, output_file)
+                mpl = numpy.median(provision_latencies)
+                apl = numpy.mean(provision_latencies)
                 stdpl = numpy.std(provision_latencies)
                 maxpl = max(provision_latencies)
+                provision_latency_cnt = len(provision_latencies)
+                all_cnt = len(provision_latencies + the_rest_latencices)
+                all_mpl = numpy.median(provision_latencies + the_rest_latencices)
+                all_apl = numpy.mean(provision_latencies + the_rest_latencices)
                 oline = "%d,%.1f,"%(nVMs, 1-configs['tightness'])
-                oline += "%f,%.1f, %.1f, %.1f,%.1f\n"% (saving, bandwidth, apl, stdpl, maxpl)
+                oline += "%f,%.1f, %.1f,%.1f,%.1f,%.1f,%d,%d,%.1f,%.1f\n"% (saving, bandwidth, apl, mpl, stdpl, maxpl, provision_latency_cnt, all_cnt, all_apl, all_mpl)                
                 f.write(oline)
+                latency_outf = open("data/latencies/Provision-Latencies"+("-%d-users"%nVMs)  + timestr+".csv", "w+")
+                for l in provision_latencies:
+                    latency_outf.write("%f\n"%l)
+                latency_outf.close()
+                
         f.close()
         print "Done. Result is in %s"%of
 
