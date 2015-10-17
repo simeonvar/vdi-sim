@@ -148,6 +148,7 @@ nVDIs = nServers + nConsolidationServers
 # we randomly sample from the traces and decide the vm assignment
 allVMs = int(configs['allVMs'])
 vm_host_map = random.sample(range(0, allVMs), nVMs)
+optimization = configs['optimization']
 
 idle_vm_consumption = float(configs['idle_vm_consumption'])
 idle_vm_consumption_min = float(configs['idle_vm_consumption_min'])
@@ -777,6 +778,9 @@ def assert_states(cur_sec, next_vdi_states, vms_copy, anchor_point):
         if next_vdi_states[v.curhost] == S3:
             print "WARNING in point", anchor_point, ": Cur sec: ", cur_sec, " vm index is ", i, " but its host ", v.curhost, " is asleep"
             assert False 
+        if v.curhost in range(nServers, nVDIs) and not v.origin in range(nServers, nVDIs) and next_vdi_states[v.origin] == FULL:
+            print "WARNING in point", anchor_point, ": Cur sec: ", cur_sec, " vm index ", i, "in curhost, ", v.curhost, ", but its home ", v.origin , " is not sleeping. This vm should be reintegrated"
+            #assert False 
 def update_vm_transition_to_handle(nVDIs, cur_sec, vm_states_of_this_interval, vm_transitions_to_handle, provision_latencies, the_rest_latencices, of11):
     # find the VM that has been active and now it is idle, and it has been in the interval for more than a while
     cnt = 0 
@@ -801,7 +805,7 @@ def update_vm_transition_to_handle(nVDIs, cur_sec, vm_states_of_this_interval, v
 def random_idle_consumption(consumption_min, consumption_max):
     amplified = random.randint(int(consumption_min*100), int(consumption_max*100))
     # let's don't want that random here
-    amplified = (consumption_min + consumption_max) / 2
+    #amplified = (consumption_min + consumption_max) / 2
     return float(amplified) / 100
 
 def run(inf, outf):
@@ -1005,8 +1009,14 @@ def run(inf, outf):
             # Reaching the end of the interval, time to make decision
             (next_vdi_states, plan) = make_decision(vm_states, vdi_states, cur_sec, provision_latencies, vm_transitions_to_handle, need_post_partial_migrations, of2, of5, of6, of11)
             # make sure vm current host and their states are consistent 
+            (cs_consumptions, partial_cnt, full_idle_cnt, full_active_cnt)  = get_cs_consumption(vms)
             print "next_vdi_states: ", next_vdi_states
-            print "Consolidation consumption: ", get_vdi_consumption(vms)[nServers]
+            for cs  in range(nServers, nVDIs):
+                print "Consolidation consumption: ", cs, ":", cs_consumptions[cs]
+                print "partial_cnt ", partial_cnt[cs]
+                print "full_idle_cnt ", full_idle_cnt[cs]
+                print "full_active_cnt ", full_active_cnt[cs]
+                
             assert_states(cur_sec, next_vdi_states, vms, "2")
             assert len(next_vdi_states) == nVDIs
             
@@ -1356,7 +1366,7 @@ def try_to_consolidate(vms_copy, existing_powered_on_servers, existing_consolida
     if powered_off_servers > 0:
         consolidatable = True
     
-    return (consolidatable, plan, powered_off_server_num) 
+    return (consolidatable, migration_plan, powered_off_server_num) 
       
 def consolidate_into_existing_consolidation_servers(vms_copy,hosts_to_migrate, hosts_vms, existing_consolidation_servers):
     global vms_per_vdi, nVDIs, nServers    
@@ -1413,7 +1423,7 @@ def try_to_consolidate_among_servers(vms_copy):
     if how_many_may_be_powered_down > 0:
         to_migrate = []
         dest_hosts = []
-        for vdi_num, consumption in sorted(vdi_consumption.items(), key=lambda x: x[1]):
+        for vdi_num in sorted(vdi_consumption):
             if vdi_num in range(nServers, nVDIs):
                 if  how_many_may_be_powered_down > 0:
                     to_migrate.append(vdi_num)
@@ -1491,6 +1501,7 @@ def decide_to_migrate(last_states, cur_sec, migration_schedule, s3_flag, of2):
             hosts_vms1[vdi].append(vm_index)
     # try to consolidate into the existing consolidation servers.
     (powered_off_servers, migration_plan) = consolidate_into_existing_consolidation_servers(vms_copy, to_migrate, hosts_vms1, existing_consolidation_servers) 
+    print "powered_off_servers: ", powered_off_servers
     
     existing_powered_on_servers = []
     for vdi in range(nServers):
@@ -1542,7 +1553,8 @@ def decide_to_migrate(last_states, cur_sec, migration_schedule, s3_flag, of2):
         full_migrations = merge_two_dicts(migration_plan.full_migrations, best_plan.full_migrations)
         partial_migrations = merge_two_dicts(migration_plan.partial_migrations, best_plan.partial_migrations)   
 
-    if consolidatable or consolidated_among_servers:
+    #if consolidatable or consolidated_among_servers:
+    if True:
         truly_migratable = True
              
         next_states = []
@@ -1560,7 +1572,7 @@ def decide_to_migrate(last_states, cur_sec, migration_schedule, s3_flag, of2):
                     next_states[i] = FULL
                     break
             if evacuated:
-                next_states[i] = MIGRATING
+                next_states[i] = S3
         return (next_states, truly_migratable, full_migrations, partial_migrations, post_partial_migrations)
     else:
         # return the previous setting
@@ -2112,6 +2124,30 @@ def try_to_allocate(migration_schedule, consolidation_server_set, newly_wakeup_s
 
     return (allocatable, [partial_migrations, reintegrations, full_migrations, post_partial_migrations], migration_schedule)
 
+def get_cs_consumption(vms_copy):
+    vdi_consumption = []
+    full_active_cnt = []
+    full_idle_cnt = []
+    partial_cnt = []
+    # see if the capacity is exceeded 
+    for i in range(0, nVDIs):   # init 
+        vdi_consumption.append(0)
+        full_idle_cnt.append(0)
+        full_active_cnt.append(0)
+        partial_cnt.append(0)
+    for i in range(0, nVMs):
+        vdi_index = vms_copy[i].curhost
+        if vms_copy[i].state == 0 and vms_copy[i].curhost != vms_copy[i].origin: # only remote partials exists
+            vdi_consumption[vdi_index] += vms_copy[i].idle_consumption
+            partial_cnt[vdi_index]  += 1
+        else:
+            vdi_consumption[vdi_index] += 1
+            if vms_copy[i].state == 0: 
+                full_idle_cnt[vdi_index]  += 1
+            else:
+                full_active_cnt[vdi_index]  += 1
+    return (vdi_consumption, partial_cnt, full_idle_cnt, full_active_cnt)  
+
 # get the vdi_consumption based on the vms_copy. 
 def get_vdi_consumption (vms_copy):
     vdi_consumption = []
@@ -2275,6 +2311,32 @@ def post_partial_migrate(vms_copy, migration_schedule, need_post_partial_migrati
                     break
     return (migration_schedule, post_partial_migrations)
 
+def kickout_full_idle_vms(vms_copy):
+    global vms_per_vdi
+    full_migrations = {}
+    partial_migrations = {}
+    for cs in range(nServers, nVDIs):
+        for vm_index in range(nVMs): 
+            v = vms_copy[vm_index]
+            if v.curhost == cs and v.origin == cs and v.state == 0:
+                home_host = vm_index / vms_per_vdi
+                src = v.curhost
+                dest = home_host
+                record_migration(vm_index, src, dest, full_migrations)
+                src = home_host
+                dest = v.curhost
+                record_migration(vm_index, src, dest, partial_migrations)
+                v.origin = home_host
+    return (full_migrations, partial_migrations)
+
+def merge_migrations(dest_migrations, src_migrations):
+    for pair in src_migrations:
+        if  pair not in dest_migrations:
+            dest_migrations[pair] = src_migrations[pair]
+        else:
+            dest_migrations[pair][0] += src_migrations[pair][0]
+            dest_migrations[pair][1] += ("-"+src_migrations[pair][1])
+
 def decide_to_resume(last_states, cur_sec, migration_schedule, provision_latencies, vm_transitions_to_handle, need_post_partial_migrations, of2, of5, of6, of11):
     global configs, vms
     assert len(vms) == nVMs
@@ -2283,10 +2345,22 @@ def decide_to_resume(last_states, cur_sec, migration_schedule, provision_latenci
     partial_migrations = {}
     resume_migrations = {}
     post_partial_migrations = {}
+    
+    optimized_full_migrations = {}
+    optimized_partial_migrations = {}
 
     resume = False
     vdis_to_resume = {}
     consolidation_server_set = []
+    
+    # we turn the full idle vms into remote partials
+    if optimization == "yes":
+        vms_copy = []
+        for v in vms:
+            vms_copy.append(vm(v.origin,v.curhost,v.state,v.idle_consumption))
+        (optimized_full_migrations, optimized_partial_migrations) = kickout_full_idle_vms(vms_copy)
+        del vms[:]
+        vms = vms_copy[:]
     
     vdi_consumption = get_vdi_consumption (vms)
     
@@ -2425,6 +2499,9 @@ def decide_to_resume(last_states, cur_sec, migration_schedule, provision_latenci
     #print "next_states :", next_states
     assert len(next_states) == nVDIs
     assert_states(cur_sec, next_states, vms, "before return try to allocate")
+    merge_migrations(full_migrations, optimized_full_migrations)
+    merge_migrations(partial_migrations, optimized_partial_migrations)
+    
     return (next_states, resume, full_migrations, partial_migrations, resume_migrations, post_partial_migrations)
 
 # return how many idle and active vms will be migrated
