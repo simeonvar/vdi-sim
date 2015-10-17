@@ -1,6 +1,21 @@
 
-from pylab import *
+# from pylab import *
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 import sys
+
+def to_percent(y, position):
+    # Ignore the passed in position. This has the effect of scaling the default
+    # tick locations.
+    s = str(100 * y)
+
+    # The percent symbol needs escaping in latex
+    if matplotlib.rcParams['text.usetex'] == True:
+        return s + r'$\%$'
+    else:
+        return s + '%'
+
 
 
 inf = open(sys.argv[1], "r")
@@ -39,7 +54,24 @@ for config in configs_saving:
     labels.append(config)
     cnt += 1
 # multiple box plots on one figure
-figure()
-boxplot(data)
-xticks(ticks, labels)
-show()
+# figure()
+# boxplot(data)
+
+#show()
+
+fs = 15 # fontsize
+
+# demonstrate how to toggle the display of different elements:
+fig, ax1 = plt.subplots(nrows=1, ncols=1)
+ax1.boxplot(data)
+plt.xticks(ticks, labels)
+ax1.set_title('Unoptimized memory server', fontsize=fs)
+ax1.set_xlabel(' VDI Server# + Consolidation Server#')
+ax1.set_ylabel('Power Saving (%)')
+formatter = FuncFormatter(to_percent)
+# Set the formatter
+plt.gca().yaxis.set_major_formatter(formatter)
+#ax1.yaxis.set_major_formatter(yticks)
+
+#fig.subplots_adjust(hspace=0.4)
+plt.show()
