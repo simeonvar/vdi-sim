@@ -145,6 +145,9 @@ nServers = 20
 vms_per_vdi = nVMs / nServers
 nConsolidationServers = 1
 nVDIs = nServers + nConsolidationServers
+# we randomly sample from the traces and decide the vm assignment
+allVMs = int(configs['allVMs'])
+vm_host_map = random.sample(range(0, allVMs), nVMs)
 
 idle_vm_consumption = float(configs['idle_vm_consumption'])
 idle_vm_consumption_min = float(configs['idle_vm_consumption_min'])
@@ -925,7 +928,8 @@ def run(inf, outf):
 
         # evaluate the current situation
         for i in range(0, nVMs):
-            a = int(activities[i].lstrip().rstrip())
+            activity_index = vm_host_map[i]
+            a = int(activities[activity_index].lstrip().rstrip())
             assert a >= 0
             if a >= 1:
                 vm_states[i] = 1 # assigned to 1, 0 by default, it will get reinited to 0 at the end of the interval
@@ -1127,6 +1131,7 @@ def run(inf, outf):
     of3.close()
     of4.close()
     print "Done. Result is stored in %s" % outf
+    print "Current vm_host_map is ", vm_host_map
     # print "Total active seconds: %d" % a1
 
     return (power_saving, bandwidth, provision_latencies, the_rest_latencies, active_becomes_idle)
@@ -2641,6 +2646,7 @@ if __name__ == '__main__':
                 cnt += 1
                 
                 print "nVMs=", nVMs
+                vm_host_map = random.sample(range(0, allVMs), nVMs)
                 output_file = input_file+ ("-%d-users"%nVMs) + timestr + ".slack-%.1f"%(1-float(tts[i]))
                 (saving, bandwidth, provision_latencies, the_rest_latencices, active_becomes_idle) = run(input_file, output_file)
                 mpl = numpy.median(provision_latencies)
