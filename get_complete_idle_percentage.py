@@ -121,6 +121,6 @@ def run(inf):
 
     inf.close()
 
-f = "data/vm-200.csv"
+#f = "data/vm-200.csv"
 
-run(f)
+#run(f)

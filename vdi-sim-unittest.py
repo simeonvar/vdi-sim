@@ -179,6 +179,7 @@ class TestMigrationFinder(unittest.TestCase):
         vm_transitions_to_handle[host1].put(waiting_vm3)
         vm_transitions_to_handle[host2].put(waiting_vm4)
         
+        of = open("tmp", "w+")
         calculate_provision_latency(cur_sec, nVDIs, vm_transitions_to_handle, resource_available, migration_schedule, provision_latencies, of)
         self.assertEqual(len(provision_latencies), 0)
         self.assertEqual(vm_transitions_to_handle[host1].qsize(), 2)
@@ -190,7 +191,7 @@ class TestMigrationFinder(unittest.TestCase):
         migration_schedule[host1][migration_pos+2] = "o," + str(vm_index1)
         
         
-        calculate_provision_latency(cur_sec, nVDIs, vm_transitions_to_handle, resource_available, migration_schedule, provision_latencies)
+        calculate_provision_latency(cur_sec, nVDIs, vm_transitions_to_handle, resource_available, migration_schedule, provision_latencies, of)
         self.assertEqual(len(provision_latencies), 1)
         self.assertEqual(provision_latencies[0], cur_sec - timestamp_of_becoming_active1 + migration_pos + 2)
         self.assertEqual((vm_transitions_to_handle[host1].qsize()), 1)
@@ -205,7 +206,7 @@ class TestMigrationFinder(unittest.TestCase):
             
         for i in range(migration_pos2-41, migration_pos2):
             migration_schedule[host2][i] = "s"
-        calculate_provision_latency(cur_sec, nVDIs, vm_transitions_to_handle, resource_available, migration_schedule, provision_latencies)
+        calculate_provision_latency(cur_sec, nVDIs, vm_transitions_to_handle, resource_available, migration_schedule, provision_latencies,of)
         self.assertEqual(len(provision_latencies), 3)
         self.assertEqual(provision_latencies[1], cur_sec - timestamp_of_becoming_active2 + migration_pos + 40 + 1)
         self.assertEqual(provision_latencies[2], cur_sec - timestamp_of_becoming_active4 + migration_pos2 + 40)
